@@ -1,0 +1,80 @@
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#e8f1ff", "edgeLabelBackground": "#ffffff", "fontFamily": "SimHei, Microsoft YaHei, sans-serif"}}}%%
+flowchart TB
+
+    subgraph CLIENT["调用方"]
+        CLI["CLI<br/>python -m jykj_ocr"]
+        PYAPI["Python API<br/>jykj_ocr.ocr()"]
+        HTTP["HTTP<br/>FastAPI /ocr /ocr/text"]
+    end
+
+    subgraph CONFIG["配置层 config.py"]
+        ENV["环境变量<br/>OPENAI_API_KEY / OPENAI_BASE_URL<br/>SILICONFLOW_API_KEY / JYKJ_OCR_*"]
+        YAML["config/config.yaml<br/>引擎顺序 + 策略"]
+        PREC["优先级<br/>显式参数 > 环境变量 > YAML > 默认"]
+        ENV --> PREC
+        YAML --> PREC
+    end
+
+    subgraph ORCH["策略层 strategy.py"]
+        STRAT["StrategyEngine<br/>按顺序尝试 + 重试"]
+        RETRY{"retry_check<br/>no_text / low_confidence / none"}
+        TIMED["TimedOCR<br/>计时装饰"]
+        STRAT --> RETRY
+        RETRY -->|未通过| STRAT
+        RETRY -->|通过| TIMED
+    end
+
+    subgraph REG["引擎注册表 engine/ (惰性 import)"]
+        REGISTRY["registry.py<br/>build_engine / build_strategy"]
+        REGISTRY -->|lazy| RAPID_IMP["rapidocr_engine"]
+        REGISTRY -->|lazy| MULTI_IMP["multimodal_engine"]
+        REGISTRY -->|lazy| SF_IMP["siliconflow_engine"]
+    end
+
+    subgraph ENGINES["引擎层 engines/"]
+        RAPID["RapidOCREngine<br/>本地 ONNX,离线<br/>适配 1.x/1.4.x/2.x 返回形态"]
+        MULTI["MultimodalEngine<br/>OpenAI 兼容 /chat/completions<br/>image_url data-URI parts"]
+        SF["SiliconFlowEngine<br/>继承 MultimodalEngine<br/>默认 PaddleOCR-VL-1.5"]
+        RAPID -->|box+text+score| MODELS_MOD["models.py<br/>TextRegion.from_parts<br/>_UNSET 保留引擎置信度"]
+        MULTI -->|text| MODELS_MOD
+        SF -->|text| MODELS_MOD
+    end
+
+    subgraph INPUT["输入解析 engine/inputs.py"]
+        LOAD["load()<br/>图片 / PDF / URL"]
+        PAGE["PageImage<br/>PIL 图像 + 尺寸"]
+        LOAD --> PAGE
+    end
+
+    CLI --> PYAPI
+    CLI --> HTTP
+    HTTP --> SERV["server.py<br/>RuntimeConfig 线程安全<br/>POST /config 运行时覆盖"]
+    SERV --> ORCH
+    PYAPI --> ORCH
+    PREC --> ORCH
+
+    ORCH --> REG
+    RAPID_IMP --> RAPID
+    MULTI_IMP --> MULTI
+    SF_IMP --> SF
+
+    CLI -.->|source| LOAD
+    LOAD --> PAGE
+    PAGE -->|attach_pil| RAPID
+    PAGE -->|attach_pil| MULTI
+    PAGE -->|attach_pil| SF
+
+    MODELS_MOD --> OUT["OCRResult<br/>text + regions + engine + model + elapsed_ms"]
+    OUT --> CLI
+    OUT --> SERV
+
+    classDef client fill:#fff3e0,stroke:#e65100
+    classDef config fill:#e8f5e9,stroke:#2e7d32
+    classDef orch fill:#e3f2fd,stroke:#1565c0
+    classDef eng fill:#f3e5f5,stroke:#6a1b9a
+    classDef input fill:#fce4ec,stroke:#ad1457
+    class CLI,PYAPI,HTTP client
+    class ENV,YAML,PREC config
+    class STRAT,RETRY,TIMED orch
+    class RAPID,MULTI,SF,MODELS_MOD eng
+    class LOAD,PAGE input

@@ -1,0 +1,34 @@
+# jykj_ocr —— docker compose 编排
+#
+#   docker compose up --build                 # 构建并启动服务
+#   docker compose run --rm ocr python -m jykj_ocr /data/x.png   # 一次性任务
+#
+# 密钥来自项目根目录的 .env（已 gitignore）；也可用 --env-file 指定别的文件。
+services:
+  ocr:
+    build: .
+    image: jykj_ocr:latest
+    container_name: jykj-ocr
+    ports:
+      - "${JYKJ_OCR_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      JYKJ_OCR_CONFIG: /app/config/config.yaml
+    volumes:
+      # 宿主机待处理文件（只读）
+      - ./data:/data:ro
+      # RapidOCR 模型权重持久化：首次下载后无需重复拉取
+      - rapidocr-models:/opt/models
+      # 想覆盖默认配置时取消注释：
+      # - ./config/config.yaml:/app/config/config.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  rapidocr-models:

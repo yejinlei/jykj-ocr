@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>jykj_ocr 架构图与接口参考</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #fafbfc;
+      --card: #ffffff;
+      --border: #d0d7de;
+      --text: #1f2328;
+      --muted: #656d76;
+      --accent: #0969da;
+      --code-bg: #f6f8fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei", "SimHei", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+    }
+    header {
+      background: linear-gradient(135deg, #1f6feb 0%, #0969da 100%);
+      color: #fff;
+      padding: 2rem 1.5rem;
+    }
+    header h1 { margin: 0 0 0.4rem; font-size: 1.6rem; }
+    header p { margin: 0; opacity: 0.92; }
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1.5rem;
+    }
+    h2 {
+      border-bottom: 2px solid var(--border);
+      padding-bottom: 0.4rem;
+      margin-top: 2.5rem;
+      color: var(--accent);
+    }
+    h3 { margin-top: 1.8rem; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.2rem;
+      margin: 1rem 0;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    }
+    .diagram {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin: 1rem 0;
+      overflow-x: auto;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 1rem 0;
+      font-size: 0.92rem;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.55rem 0.7rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); font-weight: 600; }
+    tr:nth-child(even) td { background: #fbfcfd; }
+    code {
+      background: var(--code-bg);
+      padding: 0.12rem 0.35rem;
+      border-radius: 4px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.88em;
+      color: #cf222e;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.9rem;
+      overflow-x: auto;
+    }
+    pre code { background: none; color: var(--text); padding: 0; }
+    .badge {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 12px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      margin-left: 0.4rem;
+    }
+    .ok { background: #dafbe1; color: #1a7f37; }
+    .key { background: #fff8c5; color: #9a6700; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+    footer { text-align: center; color: var(--muted); padding: 2rem 1rem; font-size: 0.85rem; }
+    .toc a { color: var(--accent); text-decoration: none; }
+    .toc a:hover { text-decoration: underline; }
+    .toc li { margin: 0.25rem 0; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>jykj_ocr 架构图与接口参考</h1>
+  <p>多引擎 OCR:本地 RapidOCR + 多模态 OCR 大模型(硅基流动 / OpenAI 兼容)</p>
+</header>
+
+<main>
+  <nav class="toc card">
+    <strong>目录</strong>
+    <ul>
+      <li><a href="#arch">整体架构图</a></li>
+      <li><a href="#engines">引擎对照表</a></li>
+      <li><a href="#flow">请求处理流程</a></li>
+      <li><a href="#config">配置与优先级</a></li>
+      <li><a href="#http">HTTP 接口参考</a></li>
+      <li><a href="#models">数据模型</a></li>
+    </ul>
+  </nav>
+
+  <h2 id="arch">整体架构图</h2>
+  <div class="diagram">
+    <pre class="mermaid">
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#e8f1ff", "edgeLabelBackground": "#ffffff", "fontFamily": "SimHei, Microsoft YaHei, sans-serif"}}}%%
+flowchart TB
+
+    subgraph CLIENT["调用方"]
+        CLI["CLI&lt;br/&gt;python -m jykj_ocr"]
+        PYAPI["Python API&lt;br/&gt;jykj_ocr.ocr()"]
+        HTTP["HTTP&lt;br/&gt;FastAPI /ocr /ocr/text"]
+    end
+
+    subgraph CONFIG["配置层 config.py"]
+        ENV["环境变量&lt;br/&gt;OPENAI_API_KEY / OPENAI_BASE_URL&lt;br/&gt;SILICONFLOW_API_KEY / JYKJ_OCR_*"]
+        YAML["config/config.yaml&lt;br/&gt;引擎顺序 + 策略"]
+        PREC["优先级&lt;br/&gt;显式参数 &gt; 环境变量 &gt; YAML &gt; 默认"]
+        ENV --&gt; PREC
+        YAML --&gt; PREC
+    end
+
+    subgraph ORCH["策略层 strategy.py"]
+        STRAT["StrategyEngine&lt;br/&gt;按顺序尝试 + 重试"]
+        RETRY{"retry_check&lt;br/&gt;no_text / low_confidence / none"}
+        TIMED["TimedOCR&lt;br/&gt;计时装饰"]
+        STRAT --&gt; RETRY
+        RETRY --&gt;|未通过| STRAT
+        RETRY --&gt;|通过| TIMED
+    end
+
+    subgraph REG["引擎注册表 engine/ (惰性 import)"]
+        REGISTRY["registry.py&lt;br/&gt;build_engine / build_strategy"]
+        REGISTRY --&gt;|lazy| RAPID_IMP["rapidocr_engine"]
+        REGISTRY --&gt;|lazy| MULTI_IMP["multimodal_engine"]
+        REGISTRY --&gt;|lazy| SF_IMP["siliconflow_engine"]
+    end
+
+    subgraph ENGINES["引擎层 engines/"]
+        RAPID["RapidOCREngine&lt;br/&gt;本地 ONNX 离线&lt;br/&gt;适配 1.x/1.4.x/2.x"]
+        MULTI["MultimodalEngine&lt;br/&gt;OpenAI 兼容 /chat/completions"]
+        SF["SiliconFlowEngine&lt;br/&gt;继承 MultimodalEngine&lt;br/&gt;默认 PaddleOCR-VL-1.5"]
+        RAPID --&gt;|box+text+score| MODELS_MOD["models.py&lt;br/&gt;TextRegion.from_parts&lt;br/&gt;_UNSET 保留置信度"]
+        MULTI --&gt;|text| MODELS_MOD
+        SF --&gt;|text| MODELS_MOD
+    end
+
+    subgraph INPUT["输入解析 engine/inputs.py"]
+        LOAD["load()&lt;br/&gt;图片 / PDF / URL"]
+        PAGE["PageImage&lt;br/&gt;PIL 图像 + 尺寸"]
+        LOAD --&gt; PAGE
+    end
+
+    CLI --&gt; PYAPI
+    CLI --&gt; HTTP
+    HTTP --&gt; SERV["server.py&lt;br/&gt;RuntimeConfig 线程安全&lt;br/&gt;POST /config 运行时覆盖"]
+    SERV --&gt; ORCH
+    PYAPI --&gt; ORCH
+    PREC --&gt; ORCH
+
+    ORCH --&gt; REG
+    RAPID_IMP --&gt; RAPID
+    MULTI_IMP --&gt; MULTI
+    SF_IMP --&gt; SF
+
+    CLI -.-&gt;|source| LOAD
+    LOAD --&gt; PAGE
+    PAGE --&gt;|attach_pil| RAPID
+    PAGE --&gt;|attach_pil| MULTI
+    PAGE --&gt;|attach_pil| SF
+
+    MODELS_MOD --&gt; OUT["OCRResult&lt;br/&gt;text+regions+engine+model+elapsed_ms"]
+    OUT --&gt; CLI
+    OUT --&gt; SERV
+
+    classDef client fill:#fff3e0,stroke:#e65100
+    classDef config fill:#e8f5e9,stroke:#2e7d32
+    classDef orch fill:#e3f2fd,stroke:#1565c0
+    classDef eng fill:#f3e5f5,stroke:#6a1b9a
+    classDef input fill:#fce4ec,stroke:#ad1457
+    class CLI,PYAPI,HTTP client
+    class ENV,YAML,PREC config
+    class STRAT,RETRY,TIMED orch
+    class RAPID,MULTI,SF,MODELS_MOD eng
+    class LOAD,PAGE input
+    </pre>
+  </div>
+
+  <h2 id="engines">引擎对照表</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr><th>引擎</th><th>类型</th><th>API key</th><th>默认模型</th><th>别名</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>rapidocr</code></td><td>本地 ONNX</td>
+          <td><span class="badge ok">无需</span></td>
+          <td>—</td>
+          <td><code>rapid</code> <code>rapid-ocr</code> <code>rapidocr-onnx</code></td>
+          <td>RapidOCR-onnxruntime,离线可用,中英文。适配 1.x 3-tuple / 1.4.x 2-tuple / 2.x dict。</td>
+        </tr>
+        <tr>
+          <td><code>siliconflow</code></td><td>远程多模态</td>
+          <td><span class="badge key">必需</span></td>
+          <td><code>PaddlePaddle/PaddleOCR-VL-1.5</code></td>
+          <td><code>sf</code> <code>silicon-flow</code> <code>silicon_flow</code></td>
+          <td>继承 MultimodalEngine,内置硅基流动默认 URL。不设 OPENAI_BASE_URL 时用内置默认。</td>
+        </tr>
+        <tr>
+          <td><code>multimodal</code></td><td>远程多模态</td>
+          <td><span class="badge key">必需</span></td>
+          <td>由 config 指定</td>
+          <td><code>multi</code> <code>openai</code> <code>openai-compat</code> <code>llm</code></td>
+          <td>通用 OpenAI 兼容端点,适配任意平台。base_url 留空时走 <code>OPENAI_BASE_URL</code>;两者皆无则报错(不静默回退硅基流动)。</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="flow">请求处理流程</h2>
+  <div class="card">
+    <pre><code>CLI / API / HTTP
+   │  source(路径/URL)
+   ▼
+engine/inputs.py  load()  ──▶ PageImage(PIL 图像 + 尺寸)
+   │
+   ▼  attach_pil(page)
+StrategyEngine(按 config.engines 顺序)
+   │  ┌─ 尝试 engine[i] ─▶ recognise(page) ─▶ OCRResult
+   │  │   retry_check(result)?
+   │  │     ├─ 通过  ─▶ 返回(TimedOCR 计时)
+   │  │     └─ 未通过 ─▶ 重试(≤ max_retries)─▶ 切换下一引擎
+   │  └─ 链耗尽 ─▶ 返回 ok 且文本最长的结果;皆无文本 ─▶ StrategyError (HTTP 422)
+   ▼
+OCRResult(text, regions, engine, model, elapsed_ms)
+   │
+   ▼
+输出:JSON / Markdown / Text</code></pre>
+  </div>
+
+  <h2 id="config">配置与优先级</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>环境变量</h3>
+      <table>
+        <thead><tr><th>变量</th><th>用途</th></tr></thead>
+        <tbody>
+          <tr><td><code>OPENAI_API_KEY</code></td><td>通用 key,任意 OpenAI 兼容平台</td></tr>
+          <tr><td><code>OPENAI_BASE_URL</code></td><td>端点 URL(切换平台只改此两变量)</td></tr>
+          <tr><td><code>SILICONFLOW_API_KEY</code></td><td>可选,覆盖 siliconflow 的 key</td></tr>
+          <tr><td><code>JYKJ_OCR_CONFIG</code></td><td>配置文件路径</td></tr>
+          <tr><td><code>JYKJ_OCR_PORT</code></td><td>HTTP 服务端口</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>优先级(高 → 低)</h3>
+      <pre><code>1. 显式参数
+     --engine / ocr(engine=...)
+2. 环境变量
+     JYKJ_OCR_*
+     JYKJ_OCR_&lt;NAME&gt;_API_KEY
+     &lt;NAME&gt;_API_KEY
+     OPENAI_API_KEY / OPENAI_BASE_URL
+3. config/config.yaml
+4. 内置默认值</code></pre>
+    </div>
+  </div>
+
+  <h2 id="http">HTTP 接口参考</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>方法</th><th>路径</th><th>说明</th><th>异常 → HTTP</th></tr></thead>
+      <tbody>
+        <tr><td><code>GET</code></td><td><code>/health</code></td><td>健康检查</td><td>—</td></tr>
+        <tr><td><code>GET</code></td><td><code>/engines</code></td><td>可用引擎 + 配置顺序</td><td>—</td></tr>
+        <tr><td><code>GET</code></td><td><code>/config</code></td><td>当前配置(<strong>不回显 key</strong>,仅 has_api_key)</td><td>—</td></tr>
+        <tr><td><code>POST</code></td><td><code>/config</code></td><td>运行时覆盖(引擎/模型/策略),不重启</td><td>ValueError → 400</td></tr>
+        <tr><td><code>DELETE</code></td><td><code>/config</code></td><td>清除运行时覆盖</td><td>—</td></tr>
+        <tr><td><code>POST</code></td><td><code>/ocr</code></td><td>上传图片/PDF 识别(multipart)</td><td>InputError→400 / EngineNotAvailable→422 / EngineError→502 / StrategyError→422</td></tr>
+        <tr><td><code>POST</code></td><td><code>/ocr/text</code></td><td>按图片 URL 识别(JSON)</td><td>同上</td></tr>
+      </tbody>
+    </table>
+    <h3>POST /ocr form 字段</h3>
+    <table>
+      <thead><tr><th>字段</th><th>必填</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>file</code></td><td>✅</td><td>图片或 PDF</td></tr>
+        <tr><td><code>engine</code></td><td>—</td><td>强制引擎</td></tr>
+        <tr><td><code>model</code></td><td>—</td><td>覆盖模型(仅远程引擎)</td></tr>
+        <tr><td><code>prompt</code></td><td>—</td><td>覆盖 prompt(仅远程引擎)</td></tr>
+        <tr><td><code>strategy</code></td><td>—</td><td>JSON 字符串,临时策略</td></tr>
+        <tr><td><code>max_pages</code></td><td>—</td><td>PDF 页数上限</td></tr>
+        <tr><td><code>dpi</code></td><td>200</td><td>PDF 渲染 DPI</td></tr>
+        <tr><td><code>format</code></td><td>json</td><td>json / text / markdown</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="models">数据模型 (models.py)</h2>
+  <div class="card">
+    <pre><code>OCRResult
+  ├─ text:        str              # 全部文本(拼接)
+  ├─ regions:     List[TextRegion] # 各文本块
+  ├─ engine:      str              # 实际引擎
+  ├─ model:       str              # 模型名(本地为空)
+  ├─ elapsed_ms:  int              # 耗时
+  ├─ width/height: int            # 页面尺寸
+  └─ ok:          bool            # 是否有可用文本
+
+TextRegion
+  ├─ text:        str
+  ├─ bbox:        BoundingBox | None
+  ├─ confidence:  float           # [0,1]
+  └─ engine:      str
+  └─ from_parts(text, bbox, confidence=_UNSET, engine)
+        # _UNSET 哨兵:调用方没传 confidence 时保留引擎自带分数,
+        #              不静默抹平为 1.0
+
+BoundingBox
+  └─ x1,y1,x2,y2, confidence, width, height, center, area()</code></pre>
+  </div>
+
+  <footer>
+    jykj_ocr · 多引擎 OCR 服务 · 详见 <a href="../README.md">README.md</a> 与 <a href="manual.md">用户手册</a>
+  </footer>
+</main>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: "base", flowchart: { htmlLabels: false } });
+</script>
+</body>
+</html>

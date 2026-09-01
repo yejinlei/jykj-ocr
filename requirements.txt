@@ -1,0 +1,21 @@
+# Core runtime dependencies
+requests>=2.31,<3
+PyYAML>=6.0,<7
+pydantic>=2.5,<3
+Pillow>=10.0,<13
+
+# PDF rendering (pymupdf preferred: no system dependencies)
+pymupdf>=1.23,<2
+
+# Local OCR engine
+rapidocr-onnxruntime>=1.3,<3
+
+# HTTP service
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+python-multipart>=0.0.9,<1
+
+# Dev / test
+pytest>=8.0,<9
+httpx>=0.27,<1   # FastAPI TestClient 依赖
+ruff>=0.4,<1
