@@ -58,3 +58,7 @@ tmp/
 out/
 test_image.png
 diag_out.json
+
+# Archify review evidence (delivered artifacts stay, temp evidence does not)
+docs/arch/_*.json
+docs/arch/*.visual-check.*
