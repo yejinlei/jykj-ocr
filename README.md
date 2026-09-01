@@ -27,6 +27,46 @@ CLI、Python API 与 FastAPI HTTP 接口。
 远程引擎统一走 **OpenAI 兼容协议**(`POST /chat/completions`,`messages` 数组 +
 `image_url` data-URI content parts),只依赖 `requests`,不引入 `openai` SDK。
 
+## 策略预设
+
+配置文件固定**默认策略**,API/CLI 可按请求**一次性切换**预设(不改动任何配置,
+只在本次请求生效)。四个预设:
+
+| 预设 | 引擎链 | 重试判定 | 文本重排 |
+|------|--------|---------|:--------:|
+| `local` | 只用本地引擎(rapidocr 等),远程全部禁用 | `no_text` | ❌ |
+| `vl` | 只用 VL 大模型(siliconflow/multimodal),本地禁用 | 沿用配置 | ❌ |
+| `fallback` | 按 config 顺序回退所有启用的引擎(默认) | `no_text` | ❌ |
+| `quality` | 同 fallback | `any`(低置信度**或**窜行即降级换引擎) | ✅ 按坐标重建阅读顺序 |
+
+`quality` 针对 RapidOCR 等检测框合并/重叠导致的**文字窜行**:检测到异常版面
+(超长宽比 + 双轴重叠)时自动换下一引擎,否则按区域坐标聚类重建行序输出。
+
+`retry_mode` 可选值:`no_text` / `low_confidence` / `line_overlap` / `any` / `none`;
+`output.reorder_lines: true` 可单独开启阅读顺序重排。
+
+**future-proof**:预设按「远程引擎白名单」划分引擎,新接入的引擎(PaddleOCR、
+Tesseract、其他云厂商…)无需改预设代码——注册后默认归入本地侧;若新引擎是
+远程端点,设 `JYKJ_OCR_REMOTE_ENGINES="a,b"` 把它标为远程即可被 `vl` 选中。
+
+```bash
+# CLI:本次运行切换到 quality 预设
+python -m jykj_ocr image.png --strategy-name quality
+
+# HTTP:/ocr form 字段 strategy_name(与 engine/model/prompt 同级,最后应用)
+curl -s http://localhost:8000/ocr -F "file=@image.png" -F "strategy_name=vl"
+
+# HTTP JSON:/ocr/text body
+curl -s http://localhost:8000/ocr/text -H "Content-Type: application/json" \
+  -d '{"image_url":"https://example.com/scan.png","strategy_name":"quality"}'
+
+# Python API
+results = jykj_ocr.ocr("image.png", strategy_name="local")
+```
+
+优先级:**单次请求的 `strategy_name` > `POST /config` 运行时覆盖 > config.yaml**。
+未知预设名返回 HTTP 400 并列出有效值。
+
 ## 安装
 
 ```bash
@@ -114,6 +154,7 @@ python -m jykj_ocr serve --port 8000
 | `source` | 图片/PDF 路径或 `http(s)://` URL |
 | `-c` / `--config` | 配置文件路径(默认 `config/config.yaml`) |
 | `--engine` | 强制使用某引擎,忽略策略链 |
+| `--strategy-name` | 一次性策略预设:`local` \| `vl` \| `fallback` \| `quality` |
 | `--format` | `text` \| `markdown` \| `json`(默认 `text`) |
 | `-o` / `--output` | 输出文件;缺省打印到 stdout |
 | `--max-pages` | PDF 最多处理页数 |
@@ -136,9 +177,10 @@ results = jykj_ocr.ocr("doc.pdf")
 text = jykj_ocr.ocr_to_text("image.png", engine="rapidocr")
 ```
 
-`ocr(source, *, engine=None, config=None, config_path=None, max_pages=None, dpi=200, retries=1)`
+`ocr(source, *, engine=None, config=None, config_path=None, max_pages=None, dpi=200, retries=1, strategy_name=None)`
 → `List[OCRResult]`,每页一个。`source` 必须是文件路径或 `http(s)://` URL
-(不接受裸 bytes)。
+(不接受裸 bytes)。`strategy_name` 一次性应用命名预设(`local`/`vl`/`fallback`/`quality`),
+只作用于本次调用的配置副本。
 
 ## HTTP API
 
@@ -166,8 +208,10 @@ curl -s http://localhost:8000/ocr \
 ```
 
 form 字段:`file`(必填)、`engine`、`model`、`prompt`、`strategy`(JSON 字符串)、
+`strategy_name`(`local`/`vl`/`fallback`/`quality`,一次性预设)、
 `max_pages`、`dpi`、`format`(`json`/`text`/`markdown`)。`model`/`prompt` 仅对远程引擎
-(`siliconflow`/`multimodal`)生效,本地 `rapidocr` 不受影响。
+(`siliconflow`/`multimodal`,或 `JYKJ_OCR_REMOTE_ENGINES` 标定的引擎)生效,
+本地 `rapidocr` 不受影响。
 
 **POST /ocr/text** 示例:
 
@@ -230,12 +274,12 @@ src/jykj_ocr/
 ├── __init__.py            # 顶层 API:ocr() / ocr_to_text()
 ├── config.py              # Config / EngineConfig / load_config / normalise_engine
 ├── models.py              # Point / BoundingBox / TextRegion / OCRResult
-├── strategy.py            # StrategyEngine / should_retry_no_text / should_retry_low_confidence
+├── strategy.py            # StrategyEngine / 重试谓词(no_text/low_confidence/line_overlap)
 ├── engine/
 │   ├── __init__.py        # 惰性注册(lazy import,不引入 PIL/rapidocr/openai)
 │   ├── base.py            # BaseEngine / PageImage / EngineNotAvailable / registry
 │   ├── inputs.py          # 图片/PDF/URL → PageImage
-│   └── registry.py        # build_engine / build_strategy / engines_from_config
+│   └── registry.py        # build_engine / build_pipeline / apply_strategy_preset / remote_engines
 ├── engines/
 │   ├── rapidocr_engine.py     # RapidOCREngine(适配 1.x/1.4.x/2.x 返回形态)
 │   ├── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容)
@@ -254,7 +298,11 @@ requirements.txt / pyproject.toml
 
 - **惰性注册**:`import jykj_ocr` 不加载 PIL/rapidocr/openai,引擎按需 import。
 - **策略引擎**:按顺序尝试每个引擎,`should_retry_no_text` /
-  `should_retry_low_confidence` 判定是否重试与切换。
+  `should_retry_low_confidence` / `should_retry_line_overlap`(窜行检测)判定是否
+  重试与切换;`combine_predicates` 支持 `any` 组合模式。
+- **命名预设**:`apply_strategy_preset` 把 `local`/`vl`/`fallback`/`quality` 展开为
+  一次性配置副本(deepcopy,输入 config 永不被改动);远程/本地划分走
+  `remote_engines()` 白名单,新引擎零改动接入。
 - **`TextRegion.from_parts`**:用 `_UNSET` 哨兵区分"调用方没传 confidence"与
   "真的传了 1.0"——引擎返回 `score: 0.88` 不会被静默抹平为 1.0。
 - **`_PydanticBase`**:pydantic 可选;缺失时回退到 stdlib 轻量替代,离线容器可运行。

@@ -34,6 +34,29 @@ def should_retry_low_confidence(min_confidence: float) -> StrategyFn:
     return _check
 
 
+def should_retry_line_overlap(_: Any, result: OCRResult) -> bool:
+    """Retry when no text OR a garbled layout (merged/overlapping rows)."""
+    from .models import detect_line_overlap
+
+    if not result.ok:
+        return True
+    return detect_line_overlap(result)
+
+
+def combine_predicates(*predicates: Optional[StrategyFn]) -> Optional[StrategyFn]:
+    """OR several retry predicates; ``None`` entries are ignored."""
+    active = [p for p in predicates if p is not None]
+    if not active:
+        return None
+    if len(active) == 1:
+        return active[0]
+
+    def _combined(config: Any, result: OCRResult) -> bool:
+        return any(p(config, result) for p in active)
+
+    return _combined
+
+
 class StrategyError(Exception):
     """Raised when no engine in the chain produced a usable result."""
 
@@ -125,6 +148,8 @@ __all__ = [
     "StrategyEngine",
     "StrategyError",
     "TimedOCR",
+    "combine_predicates",
+    "should_retry_line_overlap",
     "should_retry_low_confidence",
     "should_retry_no_text",
 ]

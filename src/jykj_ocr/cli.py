@@ -56,6 +56,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="指定引擎，忽略配置中的策略链；如 rapidocr / siliconflow / multimodal",
     )
     parser.add_argument(
+        "--strategy-name",
+        choices=("local", "vl", "fallback", "quality"),
+        help=(
+            "按命名预设整体切换策略（仅本次运行生效）："
+            "local 仅本地引擎 / vl 仅 VL 大模型 / fallback 回退链 / "
+            "quality 回退链+窜行降级+阅读顺序重排"
+        ),
+    )
+    parser.add_argument(
         "--format",
         choices=("text", "markdown", "json"),
         default="text",
@@ -139,6 +148,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         config_path=args.config,
         max_pages=args.max_pages,
         dpi=args.dpi,
+        strategy_name=args.strategy_name,
     )
     if not results:
         print("未识别到任何内容", file=sys.stderr)

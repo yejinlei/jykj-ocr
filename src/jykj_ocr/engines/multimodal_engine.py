@@ -75,6 +75,9 @@ class MultimodalEngine(BaseEngine):
 
     def __init__(self, config: EngineConfig) -> None:
         super().__init__(config)
+        # Set before anything can call engine_id(): SiliconFlowEngine subclasses
+        # inherit this __init__ and rely on it to identify themselves.
+        self._engine_id = normalise_engine(config.name)
         self.model_name = config.resolved_model or DEFAULT_MODEL
         # ``resolved_base_url`` already checks config -> OPENAI_BASE_URL. A bare
         # ``multimodal`` engine with neither must not silently fall back to
@@ -92,7 +95,6 @@ class MultimodalEngine(BaseEngine):
         self.timeout = float(getattr(config, "timeout", 120.0) or 120.0)
         self.max_tokens = getattr(config, "max_tokens", None)
         self.prompt = self._resolve_prompt(config)
-        self._engine_id = normalise_engine(config.name)
 
     def _resolve_prompt(self, config: EngineConfig) -> str:
         prompt = getattr(config, "prompt", "") or ""

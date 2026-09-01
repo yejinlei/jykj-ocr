@@ -2,14 +2,28 @@
 # 真实密钥不要写在这里；用环境变量或 .env（已在 .gitignore 中）。
 
 # 策略链：按顺序尝试，前面的引擎失败/无文字时自动切换到下一个。
-# retry_mode: no_text | low_confidence | none
+#
+# name —— 命名预设（默认 fallback；API/CLI 可用 strategy_name 一次性覆盖）:
+#   local     只用本地引擎（rapidocr 等），远程引擎全部禁用
+#   vl        只用 VL 大模型（siliconflow/multimodal），本地引擎禁用
+#   fallback  按 engines 顺序回退（不改变 enabled 标记，即本文件的配置）
+#   quality   fallback + 窜行降级（检测到合并/重叠框就换下一引擎）
+#             + 阅读顺序重排（按坐标聚类重建文本）
+# retry_mode —— 精细控制（quality 预设会自动置为 any）:
+#   no_text         无文字时重试（默认）
+#   low_confidence  平均置信度 < min_confidence 时重试
+#   line_overlap    无文字或版面疑似窜行时重试
+#   any             低置信度或窜行任一命中即重试
+#   none            首次成功即接受
 strategy:
+  name: fallback
   max_retries: 1
   retry_mode: no_text
   min_confidence: 0.7
 
 output:
   format: markdown
+  # reorder_lines: true   # 按区域坐标重建阅读顺序（quality 预设自动开启）
 
 pdf:
   max_pages: 50

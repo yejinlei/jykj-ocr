@@ -226,10 +226,105 @@ class EmptyResultError(Exception):
     """Raised when an engine returned no text and ``strict`` mode is enabled."""
 
 
+# -- geometry post-processing ----------------------------------------------
+#: Two regions count as the same visual line when their vertical spans
+#: overlap by at least this fraction of the shorter box.
+LINE_OVERLAP_RATIO = 0.5
+
+
+def _y_overlap_ratio(a: BoundingBox, b: BoundingBox) -> float:
+    lo = max(a.y1, b.y1)
+    hi = min(a.y2, b.y2)
+    if hi <= lo:
+        return 0.0
+    shorter = min(a.height, b.height)
+    return (hi - lo) / shorter if shorter > 0 else 0.0
+
+
+def _median(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def sort_regions_by_position(regions: List["TextRegion"]) -> List["TextRegion"]:
+    """Cluster regions into visual lines by bbox y-overlap, order lines
+    top-to-bottom and within a line left-to-right.
+
+    Regions without a bounding box keep their relative order and are appended
+    at the end — position-free engines (multimodal text) stay untouched.
+    """
+    boxed = [r for r in regions if r.bbox is not None]
+    loose = [r for r in regions if r.bbox is None]
+    lines: List[List["TextRegion"]] = []
+    for region in sorted(boxed, key=lambda r: (r.bbox.y1, r.bbox.x1)):  # type: ignore[union-attr]
+        placed = False
+        for line in lines:
+            anchor = line[-1].bbox  # last-added member; boxes are y-sorted
+            if anchor is not None and _y_overlap_ratio(anchor, region.bbox) >= LINE_OVERLAP_RATIO:  # type: ignore[union-attr]
+                line.append(region)
+                placed = True
+                break
+        if not placed:
+            lines.append([region])
+    ordered = [
+        region
+        for line in sorted(lines, key=lambda ln: min(r.bbox.y1 for r in ln))  # type: ignore[union-attr]
+        for region in sorted(line, key=lambda r: r.bbox.x1)  # type: ignore[union-attr]
+    ]
+    return ordered + loose
+
+
+def rebuild_text_from_regions(result: "OCRResult") -> str:
+    """Rejoin a result's text from its regions in reading order.
+
+    Only applies to multi-region results: single-region or region-less output
+    (e.g. a VL model returning one blob of text) is left exactly as-is.
+    """
+    with_text = [r for r in result.regions if (r.text or "").strip()]
+    if len(with_text) < 2:
+        return result.text
+    ordered = sort_regions_by_position(with_text)
+    return "\n".join(r.text.strip() for r in ordered)
+
+
+def detect_line_overlap(result: "OCRResult") -> bool:
+    """True when the layout looks garbled ("窜行"): a box far wider than the
+    median text height, or two boxes overlapping both axes — evidence that
+    detection merged rows or stamped/sealed text collided.
+
+    Returns False for region-less results: there is no geometry to judge, and
+    engines like multimodal legitimately produce plain text.
+    """
+    boxes = [r.bbox for r in result.regions if r.bbox is not None and r.bbox.height > 0]
+    if len(boxes) < 2:
+        return False
+    median_height = _median([b.height for b in boxes])
+    if median_height <= 0:
+        return False
+    for box in boxes:
+        if box.width / box.height > 12 and box.width / median_height > 8:
+            return True
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            a, b = boxes[i], boxes[j]
+            x_lo, x_hi = max(a.x1, b.x1), min(a.x2, b.x2)
+            if x_hi > x_lo and _y_overlap_ratio(a, b) >= LINE_OVERLAP_RATIO:
+                return True
+    return False
+
+
 __all__ = [
     "BoundingBox",
     "EmptyResultError",
     "OCRResult",
     "Point",
     "TextRegion",
+    "detect_line_overlap",
+    "rebuild_text_from_regions",
+    "sort_regions_by_position",
 ]

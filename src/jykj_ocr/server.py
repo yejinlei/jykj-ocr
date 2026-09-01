@@ -37,12 +37,15 @@ from .engine import base as engine_base
 from .engine import describe_engines
 from .engine.inputs import attach_pil, load as load_source
 from .engine.registry import (
+    apply_strategy_preset,
     build_engine,
+    build_pipeline,
     build_strategy,
     engines_from_config,
+    remote_engines,
     resolve_retry_check,
 )
-from .models import OCRResult
+from .models import OCRResult, rebuild_text_from_regions
 from .strategy import StrategyError, TimedOCR
 
 LOGGER = logging.getLogger(__name__)
@@ -164,6 +167,7 @@ class TextRequest(BaseModel):
     model: Optional[str] = None
     prompt: Optional[str] = None
     strategy: Optional[Dict[str, Any]] = None
+    strategy_name: Optional[str] = None
 
 
 class ConfigRequest(BaseModel):
@@ -193,21 +197,18 @@ def _engine_raw(engine: EngineConfig) -> Dict[str, Any]:
     }
 
 
-#: Engines for which a ``model`` override makes sense. Local engines like
-#: rapidocr ignore the model name, so we must not clobber their config.
-_REMOTE_ENGINES = {"siliconflow", "multimodal"}
-
-
 def _apply_inline_overrides(config: Config, body: TextRequest) -> Config:
-    """Apply per-request ``engine``/``model``/``prompt``/``strategy`` overrides.
+    """Apply per-request ``engine``/``model``/``prompt``/``strategy``/``strategy_name``.
 
-    This lets a caller pick a different model for a single request without a
-    global ``POST /config``, e.g. ``{"image_url": "...", "model": "qwen-vl-max"}``.
+    This lets a caller pick a different model or a named preset
+    (``local``/``vl``/``fallback``/``quality``) for a single request without a
+    global ``POST /config``, e.g. ``{"image_url": "...", "strategy_name": "quality"}``.
 
-    Returns a new :class:`Config`; the input is never mutated.
+    Returns a new :class:`Config`; the input is never mutated (one-shot).
     """
     engine_dicts = [_engine_raw(e) for e in config.engines]
     strategy = dict(config.strategy)
+    output = dict(config.output)
     changed = False
 
     if body.engine:
@@ -218,13 +219,13 @@ def _apply_inline_overrides(config: Config, body: TextRequest) -> Config:
 
     if body.model:
         for item in engine_dicts:
-            if normalise_engine(item["name"]) in _REMOTE_ENGINES:
+            if normalise_engine(item["name"]) in remote_engines():
                 item["model"] = body.model
         changed = True
 
     if body.prompt:
         for item in engine_dicts:
-            if normalise_engine(item["name"]) in _REMOTE_ENGINES:
+            if normalise_engine(item["name"]) in remote_engines():
                 item["prompt"] = body.prompt
         changed = True
 
@@ -233,15 +234,23 @@ def _apply_inline_overrides(config: Config, body: TextRequest) -> Config:
         changed = True
 
     if not changed:
-        return config
-    return from_mapping(
-        {
-            "engines": engine_dicts,
-            "strategy": strategy,
-            "output": dict(config.output),
-            "pdf": dict(config.pdf),
-        }
-    )
+        effective = config
+    else:
+        effective = from_mapping(
+            {
+                "engines": engine_dicts,
+                "strategy": strategy,
+                "output": output,
+                "pdf": dict(config.pdf),
+            }
+        )
+
+    if body.strategy_name:
+        try:
+            effective = apply_strategy_preset(effective, body.strategy_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return effective
 
 
 def create_app(config_path: Optional[str] = None) -> FastAPI:
@@ -303,7 +312,11 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         if not pages:
             raise engine_base.InputError("no pages could be loaded from the input")
         pipeline = _pipeline(config, engine_name)
-        return [pipeline.recognise(attach_pil(page)) for page in pages]
+        results = [pipeline.recognise(attach_pil(page)) for page in pages]
+        if config.output_value("reorder_lines"):
+            for result in results:
+                result.text = rebuild_text_from_regions(result)
+        return results
 
     def _joined(results: List[OCRResult]) -> str:
         return "\n\n".join(r.to_markdown() for r in results if r.ok)
@@ -381,6 +394,9 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         model: Optional[str] = Form(None),
         prompt: Optional[str] = Form(None),
         strategy: Optional[str] = Form(None),
+        strategy_name: Optional[str] = Form(
+            None, description="一次性策略预设：local / vl / fallback / quality"
+        ),
         max_pages: Optional[int] = Form(None),
         dpi: int = Form(200),
         format: str = Form("json"),
@@ -388,7 +404,9 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         """识别上传的图片或 PDF 中的文字。
 
         ``strategy`` / ``model`` 等为 JSON 字符串形式的临时配置，优先级高于
-        ``/config`` 的运行时覆盖。
+        ``/config`` 的运行时覆盖。``strategy_name`` 按命名预设整体切换引擎链
+        （``local`` 仅本地 / ``vl`` 仅大模型 / ``fallback`` 回退链 /
+        ``quality`` 回退链+窜行降级+阅读顺序重排），同样只对本请求生效。
         """
         out_format = (format or "json").lower()
         if out_format not in VALID_FORMATS:
@@ -402,7 +420,12 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc))
 
         body = TextRequest(
-            image_url="", engine=engine, model=model, prompt=prompt, strategy=strategy_map
+            image_url="",
+            engine=engine,
+            model=model,
+            prompt=prompt,
+            strategy=strategy_map,
+            strategy_name=strategy_name,
         )
         effective = _apply_inline_overrides(state.snapshot(), body)
 
