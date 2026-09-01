@@ -8,6 +8,11 @@ Pillow>=10.0,<13
 pymupdf>=1.23,<2
 
 # Local OCR engine
+# opencv-python-headless 顶替 rapidocr 的传递依赖 opencv-python:
+# GUI 版 import cv2 需要系统库 libGL.so.1(服务器/slim 镜像没有,缺失时
+# 表现为 "RapidOCR is not installed" 422);headless 版不链接 libGL。
+# 必须在 rapidocr 之前安装,Dockerfile 的 apt 层已随之移除。
+opencv-python-headless>=4.9,<6
 rapidocr-onnxruntime>=1.3,<3
 
 # HTTP service

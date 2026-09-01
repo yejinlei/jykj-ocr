@@ -45,23 +45,31 @@ pip install -e .
 > `requirements.txt` 自包含,`pip install -r requirements.txt` 后即可通过
 > `pytest tests -q` 运行全部测试。
 
-### rapidocr 引擎的 Linux 系统依赖
+### rapidocr 引擎的 OpenCV 依赖(headless)
 
-`rapidocr-onnxruntime` 的传递依赖 opencv-python 在 **Linux** 上需要系统库
-`libGL.so.1` 与 `libglib2.0`(Windows/macOS 自带,无需此步)。缺失时
-`import cv2` 会抛 ImportError,被引擎层误报为
+`rapidocr-onnxruntime` 的传递依赖是 GUI 版 `opencv-python`,它在 **Linux**
+上 import 时需要系统库 `libGL.so.1`/`libglib2.0`(slim 镜像与最小化服务器
+默认没有)。缺失时 `import cv2` 抛 ImportError,被引擎层误报为
 `"RapidOCR is not installed"`(HTTP 422)——即使 pip list 显示已安装。
 
+本项目在 `requirements.txt` 中**先装 `opencv-python-headless`** 顶替 GUI 版
+(功能对 OCR 完全等价,不链接 libGL),因此**无需任何 apt 系统包**,
+Windows/Linux/Docker 统一一条 `pip install -r requirements.txt` 即可。
+
+已经踩过这个坑的存量环境(如已装 GUI 版 opencv-python),二选一修复:
+
 ```bash
-# Debian / Ubuntu
+# 方案 A(推荐,与 requirements.txt 一致):换 headless,注意必须先卸载 GUI 版
+pip uninstall -y opencv-python && pip install "opencv-python-headless>=4.9,<6"
+
+# 方案 B:保留 GUI 版,补系统库(Debian / Ubuntu)
 apt-get update && apt-get install -y libgl1 libglib2.0-0
 ```
 
-Docker 镜像已在 Dockerfile 中内置该依赖层;裸机部署(Linux 服务器直接
-uvicorn 运行)需手动执行上面的命令。排查真实原因:
+排查真实原因(逐层 import 并打印原始错误):
 
 ```bash
-.venv/bin/python scripts/diag_rapidocr_import.py   # 逐层 import,打印真实错误
+.venv/bin/python scripts/diag_rapidocr_import.py
 ```
 
 ## 配置
