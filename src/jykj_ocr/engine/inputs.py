@@ -55,15 +55,30 @@ def _looks_like_pdf(path: str) -> bool:
 
 def _looks_like_image(path: str) -> bool:
     ext = os.path.splitext(path.lower())[1]
-    return ext in _IMAGE_EXTENSIONS or _is_png(path)
+    return ext in _IMAGE_EXTENSIONS or _magic_bytes(path) is not None
 
 
-def _is_png(path: str) -> bool:
+_MAGIC_IMAGE_TYPES = {
+    b"\x89PNG": ".png",
+    b"\xff\xd8\xff": ".jpg",
+    b"GIF8": ".gif",
+    b"BM": ".bmp",
+}
+
+
+def _magic_bytes(path: str) -> Optional[str]:
+    """Sniff the real image type from file contents (extension may be missing)."""
     try:
         with open(path, "rb") as handle:
-            return handle.read(4) == b"\x89PNG"
+            head = handle.read(12)
     except OSError:
-        return False
+        return None
+    if head.startswith(b"RIFF"):
+        return ".webp" if head[8:12] == b"WEBP" else None
+    for magic, ext in _MAGIC_IMAGE_TYPES.items():
+        if head.startswith(magic):
+            return ext
+    return None
 
 
 def _download(url: str) -> str:
