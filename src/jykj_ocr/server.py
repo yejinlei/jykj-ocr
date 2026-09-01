@@ -52,7 +52,7 @@ VALID_FORMATS = ("json", *TEXT_FORMATS)
 
 #: Config keys that ``POST /config`` is allowed to touch. Anything else is
 #: rejected so a caller cannot smuggle in arbitrary keys.
-_OVERRIDABLE_KEYS = ("engines", "strategy", "output", "pdf")
+_OVERRIDABLE_KEYS = frozenset(("engines", "strategy", "output", "pdf"))
 _ENGINE_FIELDS = {
     "name",
     "enabled",
