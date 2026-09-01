@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>jykj_ocr · 多引擎 OCR 服务</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --orange: #d29922;
+      --purple: #bc8cff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei", "SimHei", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+      line-height: 1.65;
+      min-height: 100vh;
+    }
+    .hero {
+      text-align: center;
+      padding: 4.5rem 1.5rem 3.5rem;
+      background: radial-gradient(ellipse at top, #1a2333 0%, var(--bg) 70%);
+      border-bottom: 1px solid var(--border);
+    }
+    .hero h1 {
+      font-size: 2.6rem;
+      margin-bottom: 0.6rem;
+      background: linear-gradient(120deg, var(--accent), var(--purple));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero .tagline { font-size: 1.15rem; color: var(--muted); max-width: 720px; margin: 0 auto 1.8rem; }
+    .cta { display: inline-flex; gap: 0.8rem; flex-wrap: wrap; justify-content: center; }
+    .btn {
+      display: inline-block;
+      padding: 0.65rem 1.4rem;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.95rem;
+      border: 1px solid var(--border);
+      transition: all 0.15s;
+    }
+    .btn-primary { background: var(--accent); color: #0d1117; border-color: var(--accent); }
+    .btn-primary:hover { background: #79b8ff; }
+    .btn-ghost { background: var(--card); color: var(--text); }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+    main { max-width: 980px; margin: 0 auto; padding: 2.5rem 1.5rem; }
+    h2 { font-size: 1.4rem; margin: 2.5rem 0 1rem; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.2rem; margin: 1.5rem 0; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.4rem;
+      transition: border-color 0.15s, transform 0.15s;
+    }
+    .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .card h3 { font-size: 1.1rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+    .card p { color: var(--muted); font-size: 0.92rem; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.92rem; }
+    th, td { border: 1px solid var(--border); padding: 0.6rem 0.8rem; text-align: left; vertical-align: top; }
+    th { background: #21262d; color: var(--accent); }
+    code { background: #21262d; padding: 0.12rem 0.4rem; border-radius: 4px; font-family: Consolas, monospace; font-size: 0.86em; color: var(--orange); }
+    .feature-list { list-style: none; }
+    .feature-list li { padding: 0.4rem 0; padding-left: 1.4rem; position: relative; color: var(--muted); }
+    .feature-list li::before { content: "✓"; position: absolute; left: 0; color: var(--green); font-weight: bold; }
+    .quick { background: #161b22; border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; margin: 1rem 0; overflow-x: auto; }
+    .quick code { background: none; color: var(--text); }
+    .comment { color: var(--muted); }
+    footer { text-align: center; color: var(--muted); padding: 2.5rem 1rem; border-top: 1px solid var(--border); font-size: 0.88rem; }
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <section class="hero">
+    <h1>jykj_ocr</h1>
+    <p class="tagline">多引擎 OCR 服务 —— 本地 RapidOCR(离线)+ 多模态 OCR 大模型(硅基流动 / 任意 OpenAI 兼容端点),策略层重试编排,提供 CLI、Python API 与 FastAPI HTTP 接口。</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="architecture.html">查看架构图</a>
+      <a class="btn btn-ghost" href="https://github.com/yejinlei/jykj-ocr" target="_blank" rel="noopener">GitHub 仓库</a>
+      <a class="btn btn-ghost" href="https://github.com/yejinlei/jykj-ocr/blob/master/docs/manual.md" target="_blank" rel="noopener">用户手册</a>
+    </div>
+  </section>
+
+  <main>
+    <h2>三引擎对照</h2>
+    <table>
+      <thead><tr><th>引擎</th><th>类型</th><th>API Key</th><th>默认模型</th></tr></thead>
+      <tbody>
+        <tr><td><code>rapidocr</code></td><td>本地 ONNX</td><td><span style="color:var(--green)">无需</span></td><td>—</td></tr>
+        <tr><td><code>siliconflow</code></td><td>远程多模态</td><td><span style="color:var(--orange)">必需</span></td><td><code>PaddlePaddle/PaddleOCR-VL-1.5</code></td></tr>
+        <tr><td><code>multimodal</code></td><td>远程多模态</td><td><span style="color:var(--orange)">必需</span></td><td>由 config 指定(回退 PaddleOCR-VL-1.5)</td></tr>
+      </tbody>
+    </table>
+    <p style="color:var(--muted);font-size:0.9rem;">远程引擎统一走 OpenAI 兼容协议(<code>POST /chat/completions</code>),只依赖 <code>requests</code>,不引入 <code>openai</code> SDK。</p>
+
+    <h2>核心特性</h2>
+    <div class="grid">
+      <div class="card">
+        <h3><span class="dot" style="background:var(--green)"></span>统一端点</h3>
+        <p>设一对 <code>OPENAI_API_KEY</code>/<code>OPENAI_BASE_URL</code> 即可指向任意平台,换平台不改代码。</p>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--accent)"></span>策略重试</h3>
+        <p>按引擎顺序尝试,支持 <code>no_text</code>/<code>low_confidence</code> 重试判定与自动切换。</p>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--purple)"></span>运行时配置</h3>
+        <p><code>POST /config</code> 热改模型/引擎/策略,不重启;线程安全,不回显 key 明文。</p>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--orange)"></span>惰性注册</h3>
+        <p><code>import jykj_ocr</code> 不加载 PIL/rapidocr/openai,引擎按需 import。</p>
+      </div>
+    </div>
+
+    <h2>快速开始</h2>
+    <div class="quick">
+      <code><span class="comment"># 安装(自包含 requirements.txt)</span><br/>
+pip install -r requirements.txt<br/><br/>
+<span class="comment"># 配置远程引擎(换平台只改这两个变量)</span><br/>
+export OPENAI_API_KEY=sk-xxx<br/>
+export OPENAI_BASE_URL=https://api.siliconflow.cn/v1<br/><br/>
+<span class="comment"># CLI 识别</span><br/>
+python -m jykj_ocr image.png --engine siliconflow --format json<br/><br/>
+<span class="comment"># 启动 HTTP 服务</span><br/>
+python -m jykj_ocr serve --port 8000</code>
+    </div>
+
+    <h2>HTTP 接口一览</h2>
+    <table>
+      <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>GET</code></td><td><code>/health</code></td><td>健康检查</td></tr>
+        <tr><td><code>GET</code></td><td><code>/config</code></td><td>当前配置(不回显 key)</td></tr>
+        <tr><td><code>POST</code></td><td><code>/config</code></td><td>运行时覆盖配置</td></tr>
+        <tr><td><code>POST</code></td><td><code>/ocr</code></td><td>上传图片/PDF 识别(multipart)</td></tr>
+        <tr><td><code>POST</code></td><td><code>/ocr/text</code></td><td>按图片 URL 识别(JSON)</td></tr>
+      </tbody>
+    </table>
+
+    <h2>实测状态</h2>
+    <ul class="feature-list">
+      <li>三引擎在 <code>tests/兰亭序.jpeg</code>(750×1390 中文古文)上全部跑通</li>
+      <li>rapidocr 166 区域,置信度 0.97+,离线可用</li>
+      <li>siliconflow / multimodal 均返回完整全文</li>
+      <li>pytest 离线测试基线 50 passed</li>
+      <li>GET /config 实测 <code>key_leaked=False</code></li>
+    </ul>
+  </main>
+
+  <footer>
+    jykj_ocr · MIT License ·
+    <a href="https://github.com/yejinlei/jykj-ocr" target="_blank" rel="noopener">源码</a> ·
+    <a href="architecture.html">架构图</a> ·
+    <a href="https://github.com/yejinlei/jykj-ocr/blob/master/docs/manual.md" target="_blank" rel="noopener">用户手册</a> ·
+    <a href="https://github.com/yejinlei/jykj-ocr/blob/master/README.md" target="_blank" rel="noopener">README</a>
+  </footer>
+</body>
+</html>
