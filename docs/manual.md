@@ -54,6 +54,7 @@ cp .env.example .env
 | `SILICONFLOW_API_KEY` | 可选 | 仅当 siliconflow 需与 `OPENAI_*` 不同 key 时覆盖 |
 | `JYKJ_OCR_CONFIG` | 可选 | 配置文件路径(默认 `config/config.yaml`) |
 | `JYKJ_OCR_PORT` | 可选 | HTTP 服务端口(默认 8000) |
+| `JYKJ_OCR_REMOTE_ENGINES` | 可选 | 逗号分隔,把新引擎追加进远程名单(`vl` 侧),见 §7.2 |
 
 切换平台示例(改两个变量即可,代码与配置文件不动):
 
@@ -70,8 +71,9 @@ cp .env.example .env
 
 ```yaml
 strategy:
+  name: fallback             # local | vl | fallback | quality(默认预设)
   max_retries: 1
-  retry_mode: no_text        # no_text | low_confidence | none
+  retry_mode: no_text        # no_text | low_confidence | line_overlap | any | none
   min_confidence: 0.7
 
 engines:
@@ -120,6 +122,7 @@ python -m jykj_ocr [source] [options]
 | `--max-pages` | 配置 | PDF 页数上限 |
 | `--dpi` | 200 | PDF 渲染 DPI |
 | `-c` | `config/config.yaml` | 配置文件 |
+| `--strategy-name` | 配置默认 | 一次性预设:`local`/`vl`/`fallback`/`quality`(见 §7) |
 | `serve` | — | 启动 HTTP 服务(`--host`/`--port`) |
 | `--list-engines` | — | 列出引擎后退出 |
 
@@ -140,6 +143,12 @@ python -m jykj_ocr https://example.com/scan.png
 
 # 策略链(rapidocr 优先,失败回退 siliconflow)
 python -m jykj_ocr scan.png
+
+# 命名预设:本次强制走 VL 大模型
+python -m jykj_ocr scan.png --strategy-name vl
+
+# 命名预设:rapidocr 窜行自动降级 + 阅读顺序重排
+python -m jykj_ocr scan.png --strategy-name quality
 ```
 
 ## 5. Python API
@@ -156,6 +165,9 @@ for r in results:
 # 策略链(默认引擎顺序)
 results = jykj_ocr.ocr("report.pdf", max_pages=10, dpi=300)
 
+# 一次性命名预设(不改配置文件)
+results = jykj_ocr.ocr("stamp.png", strategy_name="quality")
+
 # 只要拼接好的 markdown
 text = jykj_ocr.ocr_to_text("scan.png", engine="rapidocr")
 ```
@@ -169,7 +181,8 @@ ocr(source: str, *,
    config_path: str | None = None,
    max_pages: int | None = None,
    dpi: int = 200,
-   retries: int = 1) -> List[OCRResult]
+   retries: int = 1,
+   strategy_name: str | None = None) -> List[OCRResult]
 ```
 
 > `source` 必须是文件路径或 `http(s)://` URL,**不接受裸 bytes**。
@@ -204,6 +217,7 @@ multipart 表单:
 | `model` | — | 覆盖模型(仅远程引擎) |
 | `prompt` | — | 覆盖 prompt(仅远程引擎) |
 | `strategy` | — | JSON 字符串,临时策略 |
+| `strategy_name` | — | 一次性命名预设:`local`/`vl`/`fallback`/`quality`(见 §7) |
 | `max_pages` | — | PDF 页数上限 |
 | `dpi` | 200 | PDF 渲染 DPI |
 | `format` | `json` | `json` / `text` / `markdown` |
@@ -230,6 +244,11 @@ JSON 响应:
 curl -s http://localhost:8000/ocr/text \
   -H "Content-Type: application/json" \
   -d '{"image_url":"https://example.com/scan.png","engine":"multimodal","format":"text"}'
+
+# 也可以用命名预设;URL 无扩展名也能识别(按文件头魔数自动判型)
+curl -s http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_url":"https://example.com/img/u=1234&fm=3074","strategy_name":"vl"}'
 ```
 
 ### 6.3 运行时配置 `GET/POST/DELETE /config`
@@ -269,18 +288,79 @@ curl -s -X DELETE http://localhost:8000/config
 | `EngineError`(引擎失败) | 502 |
 | `StrategyError`(链耗尽) | 422 |
 
-## 7. 策略与重试
+## 7. 引擎使用策略
 
-策略引擎按 `config.engines` 顺序尝试,每个引擎最多重试 `max_retries` 次:
+### 7.1 命名策略预设(strategy presets)
+
+项目把常用引擎组合固化成四个**命名预设**,配置里固定默认策略,单次请求可临时切换
+(一次性,不改动服务端 base config):
+
+| 预设 | 引擎范围 | retry_mode | 阅读顺序重排 | 适用场景 |
+|------|----------|------------|:----:|----------|
+| `local` | 仅本地引擎(rapidocr 家族) | `no_text` | — | 离线、隐私敏感、批量低成本 |
+| `vl` | 仅远程 VL 大模型(siliconflow/multimodal) | `no_text` | — | 版面复杂、手写、表格 |
+| `fallback` | 全部启用引擎,按配置顺序回退(**默认**) | `no_text` | — | 通用生产链路 |
+| `quality` | 同 fallback + 窜行降级 | `any` | ✅ | 盖章/倾斜导致 rapidocr 窜行 |
+
+`quality` 的完整逻辑:先用 `any` 模式判定 rapidocr 结果是否低置信度或**窜行**
+(`detect_line_overlap`:超长宽比合并框 + 双轴重叠框),不合格则降级到 VL 引擎;
+最终输出前按区域坐标做阅读顺序重排(`rebuild_text_from_regions`,
+`output.reorder_lines`)。
+
+**用法**:
+
+```bash
+# CLI
+python -m jykj_ocr scan.png --strategy-name quality
+
+# Python API
+jykj_ocr.ocr("scan.png", strategy_name="vl")
+```
+
+```bash
+# HTTP —— /ocr(multipart)与 /ocr/text(JSON)均支持
+curl -s http://localhost:8000/ocr -F "file=@scan.png" -F "strategy_name=quality"
+curl -s http://localhost:8000/ocr/text -H "Content-Type: application/json" \
+  -d '{"image_url":"https://example.com/scan.png","strategy_name":"vl"}'
+```
+
+未知名称:CLI 报 argparse 错并列出可选值;HTTP 返回 400
+`unknown strategy 'xxx'; choose one of local, vl, fallback, quality`。
+
+**优先级**:单次请求 `strategy_name` > `POST /config` 运行时覆盖 > `config.yaml`。
+预设展开走 `apply_strategy_preset`,返回 deepcopy——输入配置永不被改动。
+
+### 7.2 更多 OCR 引擎接入
+
+本地/远程划分走 `remote_engines()`(内置 siliconflow、multimodal)。新注册引擎
+**无需改代码**即被预设识别:`local` 保留它(除非列入远程名单)、`vl` 排除它、
+`fallback`/`quality` 尊重其 `enabled` 标志。要把新厂商归入远程侧:
+
+```bash
+export JYKJ_OCR_REMOTE_ENGINES="paddlecloud,acme-vl"   # 逗号分隔,小写
+```
+
+### 7.3 底层重试模式(retry_mode)
+
+预设最终都落到 `retry_mode`。策略引擎按 `config.engines` 顺序尝试,每个引擎最多
+重试 `max_retries` 次,由下列谓词决定是否换引擎:
 
 | `retry_mode` | 行为 |
 |--------------|------|
 | `no_text` | 结果无文本 → 重试/切换(默认) |
 | `low_confidence` | 平均置信度 < `min_confidence` → 重试/切换 |
-| `none` | 第一个 `ok` 结果即返回,不重试 |
+| `line_overlap` | 无文本**或**检测到窜行 → 重试/切换 |
+| `any` | 低置信度**或**窜行任一命中 → 重试/切换(`combine_predicates` 组合) |
+| `none` / `first_success` | 第一个成功结果即返回,不重试 |
 
-链耗尽时:返回所有尝试中 `ok` 且文本最长的结果;若无任何 `ok` 结果,抛
-`StrategyError`(HTTP 422)。
+链耗尽时:返回所有尝试中 `ok` 且文本最长的结果(best-of 兜底);若无任何 `ok`
+结果,抛 `StrategyError`(HTTP 422)。手动调参示例:
+
+```bash
+curl -s -X POST http://localhost:8000/config \
+  -H "Content-Type: application/json" \
+  -d '{"strategy":{"retry_mode":"any","min_confidence":0.75,"max_retries":2}}'
+```
 
 ## 8. Docker 部署
 
@@ -308,9 +388,10 @@ docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
 .venv/Scripts/python -m pytest tests -q
 ```
 
-- **CI 基线**:50 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
+- **CI 基线**:98 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
 - 覆盖:models、config、strategy、engines(multimodal OpenAI 响应解析、rapidocr
-  1.x/1.4.x/2.x 返回形态)
+  1.x/1.4.x/2.x 返回形态)、策略预设(local/vl/fallback/quality、deepcopy 不变性、
+  `JYKJ_OCR_REMOTE_ENGINES` 扩展)、窜行检测与阅读顺序重排、inputs 魔数识别
 
 端到端接口测试(需联网 + key,非 CI):
 

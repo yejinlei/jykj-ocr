@@ -2,8 +2,10 @@
 """OpenAI-compatible multimodal OCR engine.
 
 Works with SiliconFlow and any provider exposing
-``POST /chat/completions`` with ``image_url`` content parts. The SiliconFlow
-engine subclasses this one and only pins defaults.
+``POST /chat/completions`` with ``image_url`` content parts. The
+``siliconflow`` engine is a registration alias for this class (see
+``_siliconflow_factory`` below); its defaults are injected by
+``EngineConfig.resolved_*`` in config.py, not by a subclass.
 
 Only ``requests`` is required — no ``openai`` SDK dependency, which keeps the
 image small and avoids SDK churn.

@@ -107,6 +107,19 @@
     </table>
     <p style="color:var(--muted);font-size:0.9rem;">远程引擎统一走 OpenAI 兼容协议(<code>POST /chat/completions</code>),只依赖 <code>requests</code>,不引入 <code>openai</code> SDK。</p>
 
+    <h2>引擎使用策略</h2>
+    <p style="color:var(--muted);font-size:0.92rem;margin-bottom:0.5rem;">配置固定默认策略,单次请求可用 <code>strategy_name</code>(CLI <code>--strategy-name</code> / API 参数 / HTTP 表单或 JSON 字段)一次性覆盖,不改动服务端配置:</p>
+    <table>
+      <thead><tr><th>预设</th><th>引擎范围</th><th>重试判定</th><th>阅读顺序重排</th><th>适用场景</th></tr></thead>
+      <tbody>
+        <tr><td><code>local</code></td><td>仅本地(rapidocr 家族)</td><td><code>no_text</code></td><td>—</td><td>离线、隐私敏感、批量低成本</td></tr>
+        <tr><td><code>vl</code></td><td>仅远程 VL 大模型</td><td><code>no_text</code></td><td>—</td><td>版面复杂、手写、表格</td></tr>
+        <tr><td><code>fallback</code></td><td>全部启用引擎按序回退(默认)</td><td><code>no_text</code></td><td>—</td><td>通用生产链路</td></tr>
+        <tr><td><code>quality</code></td><td>同 fallback + 窜行降级</td><td><code>any</code></td><td>✅</td><td>盖章/倾斜导致 rapidocr 窜行</td></tr>
+      </tbody>
+    </table>
+    <p style="color:var(--muted);font-size:0.9rem;">优先级:单次请求 <code>strategy_name</code> &gt; <code>POST /config</code> 运行时覆盖 &gt; <code>config.yaml</code>。新引擎注册即被预设识别,远程侧用 <code>JYKJ_OCR_REMOTE_ENGINES</code> 标记。</p>
+
     <h2>核心特性</h2>
     <div class="grid">
       <div class="card">
@@ -114,8 +127,12 @@
         <p>设一对 <code>OPENAI_API_KEY</code>/<code>OPENAI_BASE_URL</code> 即可指向任意平台,换平台不改代码。</p>
       </div>
       <div class="card">
-        <h3><span class="dot" style="background:var(--accent)"></span>策略重试</h3>
-        <p>按引擎顺序尝试,支持 <code>no_text</code>/<code>low_confidence</code> 重试判定与自动切换。</p>
+        <h3><span class="dot" style="background:var(--accent)"></span>命名策略预设</h3>
+        <p><code>local</code>/<code>vl</code>/<code>fallback</code>/<code>quality</code> 四套预设,配置固定默认、请求可一次性临时切换;底层支持 <code>line_overlap</code>/<code>any</code> 窜行降级。</p>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--green)"></span>引擎可扩展</h3>
+        <p>新引擎注册即被预设识别;<code>JYKJ_OCR_REMOTE_ENGINES</code> 一键把新厂商划入远程 VL 侧。</p>
       </div>
       <div class="card">
         <h3><span class="dot" style="background:var(--purple)"></span>运行时配置</h3>
@@ -150,6 +167,8 @@ export OPENAI_API_KEY=sk-xxx<br/>
 export OPENAI_BASE_URL=https://api.siliconflow.cn/v1<br/><br/>
 <span class="comment"># CLI 识别</span><br/>
 python -m jykj_ocr image.png --engine siliconflow --format json<br/><br/>
+<span class="comment"># 一次性命名预设(窜行降级 + 阅读顺序重排)</span><br/>
+python -m jykj_ocr stamp.png --strategy-name quality<br/><br/>
 <span class="comment"># 启动 HTTP 服务</span><br/>
 python -m jykj_ocr serve --port 8000</code>
     </div>
@@ -171,7 +190,8 @@ python -m jykj_ocr serve --port 8000</code>
       <li>三引擎在 <code>tests/兰亭序.jpeg</code>(750×1390 中文古文)上全部跑通</li>
       <li>rapidocr 166 区域,置信度 0.97+,离线可用</li>
       <li>siliconflow / multimodal 均返回完整全文</li>
-      <li>pytest 离线测试基线 50 passed</li>
+      <li>四套命名预设(local/vl/fallback/quality)在 http://192.168.0.81:8000 实测通过,未知名称返回 400 并列出可选值</li>
+      <li>pytest 离线测试基线 98 passed</li>
       <li>GET /config 实测 <code>key_leaked=False</code></li>
     </ul>
   </main>

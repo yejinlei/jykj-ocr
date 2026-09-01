@@ -158,13 +158,13 @@ flowchart TB
         REGISTRY["registry.py&lt;br/&gt;build_engine / build_strategy"]
         REGISTRY --&gt;|lazy| RAPID_IMP["rapidocr_engine"]
         REGISTRY --&gt;|lazy| MULTI_IMP["multimodal_engine"]
-        REGISTRY --&gt;|lazy| SF_IMP["siliconflow_engine"]
+        REGISTRY --&gt;|lazy| MULTI_IMP["multimodal_engine&lt;br/&gt;(同时注册 multimodal 与 siliconflow 别名)"]
     end
 
     subgraph ENGINES["引擎层 engines/"]
         RAPID["RapidOCREngine&lt;br/&gt;本地 ONNX 离线&lt;br/&gt;适配 1.x/1.4.x/2.x"]
         MULTI["MultimodalEngine&lt;br/&gt;OpenAI 兼容 /chat/completions"]
-        SF["SiliconFlowEngine&lt;br/&gt;继承 MultimodalEngine&lt;br/&gt;默认 PaddleOCR-VL-1.5"]
+        SF["siliconflow 注册别名&lt;br/&gt;同一 MultimodalEngine 实例&lt;br/&gt;默认 PaddleOCR-VL-1.5(注入于 config.py)"]
         RAPID --&gt;|box+text+score| MODELS_MOD["models.py&lt;br/&gt;TextRegion.from_parts&lt;br/&gt;_UNSET 保留置信度"]
         MULTI --&gt;|text| MODELS_MOD
         SF --&gt;|text| MODELS_MOD
@@ -230,7 +230,7 @@ flowchart TB
           <td><span class="badge key">必需</span></td>
           <td><code>PaddlePaddle/PaddleOCR-VL-1.5</code></td>
           <td><code>sf</code> <code>silicon-flow</code> <code>silicon_flow</code></td>
-          <td>继承 MultimodalEngine,内置硅基流动默认 URL。不设 OPENAI_BASE_URL 时用内置默认。</td>
+          <td>multimodal 的注册别名(同一 MultimodalEngine 实例),默认模型/URL 在 config.py 注入。不设 OPENAI_BASE_URL 时用内置硅基流动默认。</td>
         </tr>
         <tr>
           <td><code>multimodal</code></td><td>远程多模态</td>

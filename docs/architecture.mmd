@@ -15,9 +15,17 @@ flowchart TB
         YAML --> PREC
     end
 
+    subgraph PRESET["策略预设层 engine/registry.py(一次性)"]
+        APPLY["apply_strategy_preset<br/>local / vl / fallback / quality"]
+        REMOTE["remote_engines()<br/>内置 siliconflow+multimodal<br/>JYKJ_OCR_REMOTE_ENGINES 可扩展"]
+        ONESHOT["deepcopy 副本<br/>不改动 base config"]
+        APPLY --> ONESHOT
+        REMOTE --> APPLY
+    end
+
     subgraph ORCH["策略层 strategy.py"]
         STRAT["StrategyEngine<br/>按顺序尝试 + 重试"]
-        RETRY{"retry_check<br/>no_text / low_confidence / none"}
+        RETRY{"retry_check<br/>no_text / low_confidence<br/>line_overlap / any / none"}
         TIMED["TimedOCR<br/>计时装饰"]
         STRAT --> RETRY
         RETRY -->|未通过| STRAT
@@ -25,16 +33,15 @@ flowchart TB
     end
 
     subgraph REG["引擎注册表 engine/ (惰性 import)"]
-        REGISTRY["registry.py<br/>build_engine / build_strategy"]
+        REGISTRY["registry.py<br/>build_engine / build_pipeline<br/>resolve_retry_check"]
         REGISTRY -->|lazy| RAPID_IMP["rapidocr_engine"]
-        REGISTRY -->|lazy| MULTI_IMP["multimodal_engine"]
-        REGISTRY -->|lazy| SF_IMP["siliconflow_engine"]
+        REGISTRY -->|lazy| MULTI_IMP["multimodal_engine<br/>(同时注册 multimodal 与 siliconflow 别名)"]
     end
 
     subgraph ENGINES["引擎层 engines/"]
         RAPID["RapidOCREngine<br/>本地 ONNX,离线<br/>适配 1.x/1.4.x/2.x 返回形态"]
         MULTI["MultimodalEngine<br/>OpenAI 兼容 /chat/completions<br/>image_url data-URI parts"]
-        SF["SiliconFlowEngine<br/>继承 MultimodalEngine<br/>默认 PaddleOCR-VL-1.5"]
+        SF["siliconflow 注册别名<br/>同一 MultimodalEngine 实例<br/>默认 PaddleOCR-VL-1.5(注入于 config.py)"]
         RAPID -->|box+text+score| MODELS_MOD["models.py<br/>TextRegion.from_parts<br/>_UNSET 保留引擎置信度"]
         MULTI -->|text| MODELS_MOD
         SF -->|text| MODELS_MOD
@@ -49,6 +56,10 @@ flowchart TB
     CLI --> PYAPI
     CLI --> HTTP
     HTTP --> SERV["server.py<br/>RuntimeConfig 线程安全<br/>POST /config 运行时覆盖"]
+    SERV -->|strategy_name| PRESET
+    PYAPI -->|strategy_name| PRESET
+    CLI -->|strategy_name| PRESET
+    PRESET --> ORCH
     SERV --> ORCH
     PYAPI --> ORCH
     PREC --> ORCH
@@ -70,11 +81,13 @@ flowchart TB
 
     classDef client fill:#fff3e0,stroke:#e65100
     classDef config fill:#e8f5e9,stroke:#2e7d32
+    classDef preset fill:#fffde7,stroke:#f9a825
     classDef orch fill:#e3f2fd,stroke:#1565c0
     classDef eng fill:#f3e5f5,stroke:#6a1b9a
     classDef input fill:#fce4ec,stroke:#ad1457
     class CLI,PYAPI,HTTP client
     class ENV,YAML,PREC config
+    class APPLY,REMOTE,ONESHOT preset
     class STRAT,RETRY,TIMED orch
     class RAPID,MULTI,SF,MODELS_MOD eng
     class LOAD,PAGE input

@@ -10,7 +10,7 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 - **引擎**:
   - `rapidocr` — RapidOCR ONNX(离线),适配 1.4.x `(results, elapsed)`、1.x tuple 与 2.x dict 返回形态。
   - `multimodal` — 通用 OpenAI 兼容 `/chat/completions`,只依赖 `requests`(不引入 `openai` SDK)。
-  - `siliconflow` — 继承 `multimodal`,默认模型 `PaddlePaddle/PaddleOCR-VL-1.5`、base URL `https://api.siliconflow.cn/v1`。
+  - `siliconflow` — `multimodal` 的注册别名(同一 MultimodalEngine 实例,无独立子类文件),默认模型 `PaddlePaddle/PaddleOCR-VL-1.5`、base URL `https://api.siliconflow.cn/v1`(注入于 `config.py`)。
 - **引擎别名**:rapid/rapid-ocr/rapidocr-onnx → rapidocr;sf/silicon-flow/silicon_flow → siliconflow;
   multi/openai/openai-compat/openai-compatible/llm → multimodal(`config.normalise_engine`)。
 - **Docker**:`python:3.11-slim` 非 root,含 `HEALTHCHECK`,通过 `JYKJ_OCR_CONFIG` / `JYKJ_OCR_PORT` 注入配置。
@@ -31,8 +31,7 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 │   │   └── registry.py        # build_engine / build_pipeline / apply_strategy_preset / remote_engines / resolve_retry_check
 │   ├── engines/
 │   │   ├── rapidocr_engine.py     # RapidOCREngine
-│   │   ├── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容)
-│   │   └── siliconflow_engine.py  # SiliconFlowEngine(MultimodalEngine 子类)
+│   │   └── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容;同时注册 siliconflow 别名工厂)
 │   ├── cli.py               # argparse CLI(`jykj-ocr` / `serve` / `--list-engines` / `--engine` / `--strategy-name` / `--format`)
 │   └── server.py            # FastAPI /ocr /ocr/text /config /engines /health
 ├── config/config.yaml       # 默认引擎+策略,api_key 有意省略(走环境变量)

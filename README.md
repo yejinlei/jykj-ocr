@@ -17,7 +17,7 @@ CLI、Python API 与 FastAPI HTTP 接口。
 | 引擎 | 类型 | 需 API key | 默认模型 | 说明 |
 |------|------|:----------:|---------|------|
 | `rapidocr` | 本地 ONNX | ❌ | — | RapidOCR-onnxruntime,离线可用,中英文 |
-| `siliconflow` | 远程多模态 | ✅ | `PaddlePaddle/PaddleOCR-VL-1.5` | 硅基流动,继承 multimodal,内置默认 URL |
+| `siliconflow` | 远程多模态 | ✅ | `PaddlePaddle/PaddleOCR-VL-1.5` | 硅基流动,multimodal 的注册别名(同一引擎实例),默认模型/URL 注入于 config.py |
 | `multimodal` | 远程多模态 | ✅ | 由 config 指定 | 通用 OpenAI 兼容端点,适配任意平台 |
 
 **引擎别名**(`config.normalise_engine`):`rapid`/`rapid-ocr`/`rapidocr-onnx` → `rapidocr`;
@@ -282,8 +282,7 @@ src/jykj_ocr/
 │   └── registry.py        # build_engine / build_pipeline / apply_strategy_preset / remote_engines
 ├── engines/
 │   ├── rapidocr_engine.py     # RapidOCREngine(适配 1.x/1.4.x/2.x 返回形态)
-│   ├── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容)
-│   └── siliconflow_engine.py  # SiliconFlowEngine(MultimodalEngine 子类)
+│   └── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容;同时注册 siliconflow 别名工厂)
 ├── cli.py               # argparse CLI
 └── server.py            # FastAPI /ocr /ocr/text /config /engines /health
 config/config.yaml       # 默认引擎 + 策略
