@@ -7,10 +7,10 @@ import logging
 from typing import List, Optional
 
 from .config import Config, EngineConfig, load_config
-from .engine import create_engine
 from .engine.inputs import attach_pil, load as load_source
 from .engine.registry import (
     apply_strategy_preset,
+    build_engine,
     build_pipeline,
     build_strategy,
     engines_from_config,
@@ -79,7 +79,9 @@ def ocr(
         return []
 
     if engine:
-        pipeline = TimedOCR(create_engine(engine, cfg.find_engine(engine)))
+        # build_engine normalises aliases (``sf`` -> ``siliconflow``) and falls
+        # back to a default EngineConfig when the name is not in the config.
+        pipeline = TimedOCR(build_engine(engine, cfg))
     elif strategy_name:
         pipeline = build_pipeline(cfg)
     else:

@@ -29,8 +29,8 @@ def _import_rapidocr() -> None:
 
 
 def _import_multimodal() -> None:
+    # Registers both "multimodal" and its alias factory "siliconflow".
     from ..engines import multimodal_engine  # noqa: F401
-    from ..engines import siliconflow_engine  # noqa: F401
 
 
 # Deferred so that importing jykj_ocr never imports rapidocr/openai.

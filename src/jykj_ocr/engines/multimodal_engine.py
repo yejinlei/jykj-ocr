@@ -75,14 +75,16 @@ class MultimodalEngine(BaseEngine):
 
     def __init__(self, config: EngineConfig) -> None:
         super().__init__(config)
-        # Set before anything can call engine_id(): SiliconFlowEngine subclasses
-        # inherit this __init__ and rely on it to identify themselves.
+        # Set before anything can call engine_id(): the config name decides
+        # which platform this instance talks to ("multimodal" generic vs the
+        # "siliconflow" alias, whose defaults are filled in config.py).
         self._engine_id = normalise_engine(config.name)
         self.model_name = config.resolved_model or DEFAULT_MODEL
-        # ``resolved_base_url`` already checks config -> OPENAI_BASE_URL. A bare
-        # ``multimodal`` engine with neither must not silently fall back to
-        # SiliconFlow (that would route a different provider's key to the wrong
-        # endpoint); require an explicit URL instead.
+        # ``resolved_base_url`` already checks config -> OPENAI_BASE_URL ->
+        # siliconflow default. A bare ``multimodal`` engine with none of the
+        # three must not silently fall back to SiliconFlow (that would route a
+        # different provider's key to the wrong endpoint); require an explicit
+        # URL instead.
         base = config.resolved_base_url
         if not base and self.engine_id() != "siliconflow":
             raise EngineNotAvailable(
@@ -250,6 +252,16 @@ class MultimodalEngine(BaseEngine):
 
 @register("multimodal")
 def _multimodal_factory(config: EngineConfig) -> MultimodalEngine:
+    return MultimodalEngine(config)
+
+
+@register("siliconflow")
+def _siliconflow_factory(config: EngineConfig) -> MultimodalEngine:
+    # ``siliconflow`` is a name alias, not a subclass: the defaults
+    # (base_url / model) are injected by EngineConfig.resolved_* in config.py,
+    # and normalise_engine(name) keeps results tagged engine="siliconflow".
+    if not config.name:
+        config.name = "siliconflow"
     return MultimodalEngine(config)
 
 
