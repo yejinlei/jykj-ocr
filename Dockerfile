@@ -25,6 +25,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # ---------------------------------------------------------------------------
+# 系统依赖层 —— rapidocr-onnxruntime 的传递依赖 opencv-python 需要 libGL.so.1
+# 与 libglib2.0,slim 镜像不带,缺失时 import cv2 抛 ImportError,会被引擎层
+# 误报为 "RapidOCR is not installed"(HTTP 422)。headless 环境无需 libGL,
+# 但保留通用库以兼容直接 pip install opencv-python 的场景。
+# ---------------------------------------------------------------------------
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
 # 依赖层 —— 只有 requirements.txt 变化才会重建，其余命中缓存
 # ---------------------------------------------------------------------------
 COPY requirements.txt ./requirements.txt

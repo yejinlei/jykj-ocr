@@ -45,6 +45,25 @@ pip install -e .
 > `requirements.txt` 自包含,`pip install -r requirements.txt` 后即可通过
 > `pytest tests -q` 运行全部测试。
 
+### rapidocr 引擎的 Linux 系统依赖
+
+`rapidocr-onnxruntime` 的传递依赖 opencv-python 在 **Linux** 上需要系统库
+`libGL.so.1` 与 `libglib2.0`(Windows/macOS 自带,无需此步)。缺失时
+`import cv2` 会抛 ImportError,被引擎层误报为
+`"RapidOCR is not installed"`(HTTP 422)——即使 pip list 显示已安装。
+
+```bash
+# Debian / Ubuntu
+apt-get update && apt-get install -y libgl1 libglib2.0-0
+```
+
+Docker 镜像已在 Dockerfile 中内置该依赖层;裸机部署(Linux 服务器直接
+uvicorn 运行)需手动执行上面的命令。排查真实原因:
+
+```bash
+.venv/bin/python scripts/diag_rapidocr_import.py   # 逐层 import,打印真实错误
+```
+
 ## 配置
 
 API key 只通过**环境变量**提供,绝不写入配置文件或代码:
