@@ -301,9 +301,9 @@ curl -s -X DELETE http://localhost:8000/config
 | 预设 | 引擎范围 | retry_mode | 阅读顺序重排 | 适用场景 |
 |------|----------|------------|:----:|----------|
 | `local` | 仅本地引擎(rapidocr 家族) | `no_text` | — | 离线、隐私敏感、批量低成本 |
-| `vl` | 仅远程 VL 大模型(siliconflow/multimodal) | `no_text` | — | 版面复杂、手写、表格 |
+| `vl` | 仅远程 VL 大模型(siliconflow/multimodal) | `no_text` | — | 版面复杂、手写、表格、**需要整理后的连贯文本** |
 | `fallback` | 全部启用引擎,按配置顺序回退(**默认**) | `no_text` | — | 通用生产链路 |
-| `quality` | 同 fallback + 窜行降级 | `any` | ✅ | 盖章/倾斜导致 rapidocr 窜行 |
+| `quality` | 同 fallback + 窜行降级 + 阅读顺序重排 | `any` | ✅ | 盖章/倾斜导致 rapidocr 窜行,或本地优先但需要回退整理 |
 
 `quality` 的完整逻辑:先用 `any` 模式判定 rapidocr 结果是否低置信度或**窜行**
 (`detect_line_overlap`:超长宽比合并框 + 双轴重叠框),不合格则降级到 VL 引擎;
