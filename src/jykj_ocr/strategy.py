@@ -149,9 +149,11 @@ class TimedOCR:
 # ---------------------------------------------------------------------------
 
 #: Score mode names understood by ``BestofEngine``.
-BESTOF_MODES = ("smart", "fastest", "highest_confidence", "longest")
+BESTOF_MODES = ("smart", "fastest", "highest_confidence", "longest", "fluency")
 
 _GARBLED_PENALTY = 20.0  # synthetic confidence points subtracted for garbled layout
+_FLUENCY_SINGLE_CHAR_PENALTY = 0.3  # fluency pts lost per single-char region (capped)
+_FLUENCY_SINGLE_CHAR_CAP = 25.0      # max single-char penalty
 
 
 def _mean_confidence(result: OCRResult) -> float:
@@ -167,8 +169,58 @@ def _is_garbled(result: OCRResult) -> bool:
     return detect_line_overlap(result)
 
 
+def _text_parts(result: OCRResult) -> List[str]:
+    """Non-empty, stripped text from each region — used by fluency scoring."""
+    return [
+        (r.text or "").strip()
+        for r in result.regions
+        if (r.text or "").strip()
+    ]
+
+
+def _fluency_score(result: OCRResult) -> float:
+    """Semantic fluency: how much the output reads like natural language.
+
+    Signals:
+      - mean phrase length (chars per region): longer phrases → more fluent
+      - single-char region ratio: too many fragments → penalised
+      - CJK punctuation ratio: presence of sentence markers → more fluent
+
+    Returns a score in roughly ``[-_FLUENCY_SINGLE_CHAR_CAP, +40]``.
+    """
+    if not result.ok:
+        return float("-inf")
+    text = result.text or ""
+    if not text.strip():
+        return 0.0
+
+    parts = _text_parts(result)
+    if not parts:
+        parts = [text]
+
+    total_chars = sum(len(p) for p in parts)
+    if total_chars == 0:
+        return 0.0
+
+    # Mean phrase length: rewards longer coherent phrases (cap at 30 chars).
+    mean_phrase = total_chars / len(parts)
+    phrase_bonus = min(15.0, mean_phrase)
+
+    # Single-char fragment penalty: 166 single-char fragments would hit the cap.
+    single_chars = sum(1 for p in parts if len(p) == 1)
+    frag_penalty = min(_FLUENCY_SINGLE_CHAR_CAP,
+                       single_chars * _FLUENCY_SINGLE_CHAR_PENALTY)
+
+    # CJK punctuation: presence of sentence markers = reads like natural language.
+    _CJK_PUNCT = set("，。！？、；：""''（）《》…—""''·—")
+    punct_ratio = sum(1 for c in text if c in _CJK_PUNCT) / max(1, len(text))
+    punct_bonus = min(5.0, punct_ratio * 200.0)  # a few punct → up to 5 pts
+
+    return phrase_bonus + punct_bonus - frag_penalty
+
+
 def _score_smart(result: OCRResult) -> float:
-    """Composite score: confidence - garbled penalty + small text-length bonus."""
+    """Composite score: confidence - garbled penalty + text-length + fluency."""
     if not result.ok:
         return float("-inf")
     s = _mean_confidence(result) * 100.0
@@ -176,6 +228,8 @@ def _score_smart(result: OCRResult) -> float:
         s -= _GARBLED_PENALTY
     # gentle nudge toward non-empty text
     s += min(1.0, len((result.text or "") or ""))
+    # fluency bonus (heavily weighted — fluency is the human-preferred signal)
+    s += _fluency_score(result)
     return s
 
 
@@ -191,11 +245,17 @@ def _score_longest(result: OCRResult) -> float:
     return len((result.text or "") or "") if result.ok else float("-inf")
 
 
+def _score_fluency(result: OCRResult) -> float:
+    """Pick the result that reads most like natural language."""
+    return _fluency_score(result) if result.ok else float("-inf")
+
+
 _BESTOF_SCORE: Dict[str, Callable[[OCRResult], float]] = {
     "smart": _score_smart,
     "fastest": _score_fastest,
     "highest_confidence": _score_highest_confidence,
     "longest": _score_longest,
+    "fluency": _score_fluency,
 }
 
 
