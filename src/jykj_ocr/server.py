@@ -291,14 +291,15 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
 
     # -- pipeline -----------------------------------------------------------
     def _pipeline(config: Config, engine_name: Optional[str] = None) -> Any:
-        """A single forced engine, or the full configured strategy chain."""
+        """A single forced engine, or the full configured pipeline.
+
+        Delegates to :func:`build_pipeline` so it honours every strategy the
+        registry understands — ``seq*`` retry chains *and* ``bestof*`` (which
+        requires :class:`BestofEngine`, not :class:`StrategyEngine`).
+        """
         if engine_name:
             return TimedOCR(build_engine(engine_name, config))
-        return build_strategy(
-            engines_from_config(config),
-            retries=int(config.strategy_value("max_retries", 1)),
-            retry_check=resolve_retry_check(config.strategy),
-        )
+        return build_pipeline(config)
 
     def _recognise(
         source: str,
