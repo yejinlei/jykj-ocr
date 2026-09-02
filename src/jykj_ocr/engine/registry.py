@@ -54,11 +54,13 @@ def remote_engines() -> tuple:
 # ``bestof*`` presets use :class:`BestofEngine` — every engine runs once and
 # the winner is chosen by a score function; the result is never re-ordered::
 #
-#   bestof / bestof-smart       score = confidence - garbled penalty
-#   bestof-fastest              lowest elapsed_ms
-#   bestof-confidence           highest mean region confidence
-#   bestof-longest              longest text
-#   bestof:<mode>               syntax alias for any of the modes above
+#   bestof-smart              confidence + garbled penalty + text length + fluency
+#   bestof-fastest            lowest elapsed_ms
+#   bestof-confidence         highest mean region confidence
+#   bestof-longest            longest text
+#   bestof-fluency            most natural-sounding language (phrase density +
+#                             CJK punctuation, penalises single-char fragments)
+#   bestof:<mode>             syntax alias for any of the modes above
 #
 # Legacy aliases kept for backwards compatibility:
 #   fallback  == seq
@@ -75,6 +77,7 @@ STRATEGY_PRESETS = (
     "bestof-fastest",
     "bestof-confidence",
     "bestof-longest",
+    "bestof-fluency",
     # legacy
     "fallback",
     "quality",
@@ -97,6 +100,7 @@ _SEQ_PRESETS = {
     "bestof-fastest": (None, False, True, "fastest"),
     "bestof-confidence": (None, False, True, "highest_confidence"),
     "bestof-longest": (None, False, True, "longest"),
+    "bestof-fluency": (None, False, True, "fluency"),
 }
 
 
