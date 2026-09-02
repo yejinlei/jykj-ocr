@@ -153,6 +153,9 @@ python -m jykj_ocr scan.png --strategy-name quality
 
 ## 5. Python API
 
+> 完整可运行示例见 `scripts/demo.py`(`python scripts/demo.py [图片路径]`),
+> 四种场景一次跑通。
+
 ```python
 import jykj_ocr
 
