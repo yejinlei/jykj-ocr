@@ -108,17 +108,38 @@
     <p style="color:var(--muted);font-size:0.9rem;">远程引擎统一走 OpenAI 兼容协议(<code>POST /chat/completions</code>),只依赖 <code>requests</code>,不引入 <code>openai</code> SDK。</p>
 
     <h2>引擎使用策略</h2>
-    <p style="color:var(--muted);font-size:0.92rem;margin-bottom:0.5rem;">配置固定默认策略,单次请求可用 <code>strategy_name</code>(CLI <code>--strategy-name</code> / API 参数 / HTTP 表单或 JSON 字段)一次性覆盖,不改动服务端配置:</p>
+    <p style="color:var(--muted);font-size:0.92rem;margin-bottom:0.5rem;">配置固定默认策略,单次请求可用 <code>strategy_name</code>(CLI <code>--strategy-name</code> / API 参数 / HTTP 表单或 JSON 字段)一次性覆盖,不改动服务端配置。</p>
+
+    <h3 style="font-size:1.05rem;color:var(--text);margin:1.2rem 0 0.5rem;">顺序预设 <code>seq*</code>(走 <code>StrategyEngine</code>,按序尝试,首个命中即返回)</h3>
     <table>
       <thead><tr><th>预设</th><th>引擎范围</th><th>重试判定</th><th>阅读顺序重排</th><th>适用场景</th></tr></thead>
       <tbody>
         <tr><td><code>local</code></td><td>仅本地(rapidocr 家族)</td><td><code>no_text</code></td><td>—</td><td>离线、隐私敏感、批量低成本</td></tr>
         <tr><td><code>vl</code></td><td>仅远程 VL 大模型</td><td><code>no_text</code></td><td>—</td><td>版面复杂、手写、表格</td></tr>
-        <tr><td><code>fallback</code></td><td>全部启用引擎按序回退(默认)</td><td><code>no_text</code></td><td>—</td><td>通用生产链路</td></tr>
-        <tr><td><code>quality</code></td><td>同 fallback + 窜行降级</td><td><code>any</code></td><td>✅</td><td>盖章/倾斜导致 rapidocr 窜行</td></tr>
+        <tr><td><code>seq</code></td><td>全部启用引擎按序回退</td><td><code>no_text</code></td><td>—</td><td>通用生产链路</td></tr>
+        <tr><td><code>seq-any</code></td><td>同 seq + 窜行降级</td><td><code>any</code></td><td>✅</td><td>盖章/倾斜导致 rapidocr 窜行</td></tr>
+        <tr><td><code>seq-low_conf</code></td><td>全部启用引擎</td><td><code>low_confidence</code></td><td>—</td><td>低置信度自动降级</td></tr>
+        <tr><td><code>seq-line_overlap</code></td><td>全部启用引擎</td><td><code>line_overlap</code></td><td>—</td><td>窜行时自动降级</td></tr>
+        <tr><td><code>fallback</code></td><td>同 seq</td><td>—</td><td>—</td><td>legacy 别名(默认)</td></tr>
+        <tr><td><code>quality</code></td><td>同 seq-any</td><td>—</td><td>—</td><td>legacy 别名</td></tr>
       </tbody>
     </table>
-    <p style="color:var(--muted);font-size:0.9rem;">优先级:单次请求 <code>strategy_name</code> &gt; <code>POST /config</code> 运行时覆盖 &gt; <code>config.yaml</code>。新引擎注册即被预设识别,远程侧用 <code>JYKJ_OCR_REMOTE_ENGINES</code> 标记。</p>
+
+    <h3 style="font-size:1.05rem;color:var(--text);margin:1.5rem 0 0.5rem;">最佳预设 <code>bestof*</code>(走 <code>BestofEngine</code>,所有引擎各跑一次,按评分选最佳)</h3>
+    <table>
+      <thead><tr><th>预设</th><th>评分函数</th><th>适用场景</th></tr></thead>
+      <tbody>
+        <tr><td><code>bestof</code> / <code>bestof-smart</code></td><td>置信度×100 − 窜行 + 文本长度 + **语义流畅度**</td><td>综合最优,**推荐**</td></tr>
+        <tr><td><code>bestof-fastest</code></td><td>耗时(elapsed_ms)最低</td><td>追求速度</td></tr>
+        <tr><td><code>bestof-confidence</code></td><td>平均置信度最高</td><td>追求质量</td></tr>
+        <tr><td><code>bestof-longest</code></td><td>文本最长</td><td>追求完整性</td></tr>
+        <tr><td><code>bestof-fluency</code></td><td>短语密度 + CJK 标点 − 单字碎片惩罚</td><td>追求"读起来像人话",对比本地碎片化 vs VL 连贯结果</td></tr>
+        <tr><td><code>bestof:&lt;mode&gt;</code></td><td>同以上任意 mode</td><td>冒号语法别名</td></tr>
+      </tbody>
+    </table>
+    <p style="color:var(--muted);font-size:0.88rem;margin-top:0.4rem;"><code>bestof-fluency</code>:短语越长越连贯(+15),有标点更像自然语言(+5),单字/短词碎片扣减(上限 −25)。兰亭序实测 rapidocr fluency≈−23,siliconflow≈+15。</p>
+
+    <p style="color:var(--muted);font-size:0.9rem;margin-top:0.6rem;">优先级:单次请求 <code>strategy_name</code> &gt; <code>POST /config</code> 运行时覆盖 &gt; <code>config.yaml</code>。新引擎注册即被预设识别,远程侧用 <code>JYKJ_OCR_REMOTE_ENGINES</code> 标记。</p>
 
     <h2>核心特性</h2>
     <div class="grid">
@@ -182,6 +203,8 @@ python -m jykj_ocr serve --port 8000</code>
         <tr><td><code>POST</code></td><td><code>/config</code></td><td>运行时覆盖配置</td></tr>
         <tr><td><code>POST</code></td><td><code>/ocr</code></td><td>上传图片/PDF 识别(multipart)</td></tr>
         <tr><td><code>POST</code></td><td><code>/ocr/text</code></td><td>按图片 URL 识别(JSON)</td></tr>
+        <tr><td><code>POST</code></td><td><code>/ocr/{preset}</code></td><td>路由即策略:多部件上传(预设=引擎或策略名)</td></tr>
+        <tr><td><code>POST</code></td><td><code>/ocr/{preset}/text</code></td><td>路由即策略:按图片 URL(JSON)</td></tr>
       </tbody>
     </table>
 
@@ -190,8 +213,9 @@ python -m jykj_ocr serve --port 8000</code>
       <li>三引擎在 <code>tests/兰亭序.jpeg</code>(750×1390 中文古文)上全部跑通</li>
       <li>rapidocr 166 区域,置信度 0.97+,离线可用</li>
       <li>siliconflow / multimodal 均返回完整全文</li>
-      <li>四套命名预设(local/vl/fallback/quality)在 http://192.168.0.81:8000 实测通过,未知名称返回 400 并列出可选值</li>
-      <li>pytest 离线测试基线 98 passed</li>
+      <li>四套命名预设(local/vl/seq*/bestof*)在 http://192.168.0.81:8000 实测通过,未知名称返回 400 并列出可选值</li>
+      <li>便捷路由 <code>/ocr/{preset}</code> / <code>/ocr/{preset}/text</code>(路由即策略)已上线,新引擎/新预设无需改路由</li>
+      <li>pytest 离线测试基线 137 passed</li>
       <li>GET /config 实测 <code>key_leaked=False</code></li>
     </ul>
   </main>

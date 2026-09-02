@@ -44,6 +44,7 @@ from .engine.registry import (
     engines_from_config,
     remote_engines,
     resolve_retry_check,
+    STRATEGY_PRESETS,
 )
 from .models import OCRResult, rebuild_text_from_regions
 from .strategy import StrategyError, TimedOCR
@@ -400,7 +401,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         ),
         max_pages: Optional[int] = Form(None),
         dpi: int = Form(200),
-        format: str = Form("json"),
+        format: Optional[str] = Form(None),
     ) -> Any:
         """识别上传的图片或 PDF 中的文字。
 
@@ -457,6 +458,123 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         """识别图片 URL（``http(s)://``）中的文字。"""
         if not body.image_url:
             raise HTTPException(status_code=400, detail="image_url is required")
+        effective = _apply_inline_overrides(state.snapshot(), body)
+        results = _recognise(
+            body.image_url,
+            config=effective,
+            engine_name=body.engine,
+            max_pages=body.max_pages,
+            dpi=body.dpi,
+        )
+        return _ocr_response(results, body.format.lower())
+
+    # -- 便捷端点：路由即策略 -----------------------------------------------
+    @app.post("/ocr/{preset}")
+    async def ocr_preset_upload(
+        preset: str,
+        file: UploadFile = File(..., description="图片或 PDF"),
+        model: Optional[str] = Form(None),
+        prompt: Optional[str] = Form(None),
+        max_pages: Optional[int] = Form(None),
+        dpi: int = Form(200),
+        format: Optional[str] = Form(None),
+    ) -> Any:
+        """路由即策略的专用接口：``POST /ocr/{preset}``。
+
+        ``preset`` 路径参数自动识别:
+          - 若匹配已注册引擎名(rapidocr / siliconflow / multimodal),等价于
+            ``POST /ocr ... -F engine=preset``(强制单引擎);
+          - 否则按策略预设名(local / vl / seq* / bestof* / legacy 别名 /
+            bestof:<mode>)处理,等价于 ``strategy_name=preset``。
+
+        例::
+
+            POST /ocr/rapidocr         # 只跑 rapidocr
+            POST /ocr/siliconflow      # 只跑硅基流动
+            POST /ocr/bestof           # 所有引擎择优
+            POST /ocr/bestof-fluency   # 语义流畅度优先
+            POST /ocr/quality          # 窜行降级 + 阅读顺序重排
+            POST /ocr/vl               # 仅远程大模型
+
+        模型 / prompt / 格式等仍可覆盖:
+            POST /ocr/siliconflow ... -F "model=qwen-vl-max" -F "format=text"
+        """
+        out_format = (format or "json").lower()
+        if out_format not in VALID_FORMATS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown format '{format}'; use json, text or markdown",
+            )
+        norm = normalise_engine(preset)
+        registered = describe_engines()
+        lower = preset.lower()
+        if norm in registered:
+            body = TextRequest(image_url="", engine=preset)
+        elif lower in STRATEGY_PRESETS or (lower.startswith("bestof:") and
+              lower[len("bestof:"):].strip()):
+            body = TextRequest(image_url="", strategy_name=preset)
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"unknown preset '{preset}': choose an engine "
+                    f"({', '.join(sorted(registered))}) or a strategy preset "
+                    f"({', '.join(STRATEGY_PRESETS)}, or bestof:<mode>)"
+                ),
+            )
+        if model:
+            body.model = model
+        if prompt:
+            body.prompt = prompt
+        effective = _apply_inline_overrides(state.snapshot(), body)
+
+        suffix = os.path.splitext(file.filename or "upload.bin")[1] or ".bin"
+        tmp: Optional[tempfile.NamedTemporaryFile] = None
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            tmp.write(await file.read())
+            tmp.close()
+            results = _recognise(
+                tmp.name,
+                config=effective,
+                engine_name=body.engine,
+                max_pages=max_pages,
+                dpi=dpi,
+            )
+        finally:
+            if tmp is not None:
+                path = tmp.name
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        return _ocr_response(results, out_format)
+
+    @app.post("/ocr/{preset}/text")
+    async def ocr_preset_url(preset: str, body: TextRequest) -> Any:
+        """路由即策略的 JSON 接口:``POST /ocr/{preset}/text``。
+
+        与 :func:`ocr_preset_upload` 同义,仅 body 用 ``image_url``。
+        """
+        if not body.image_url:
+            raise HTTPException(status_code=400, detail="image_url is required")
+        norm = normalise_engine(preset)
+        registered = describe_engines()
+        lower = preset.lower()
+        if norm in registered:
+            body.engine = preset
+        elif lower in STRATEGY_PRESETS or (lower.startswith("bestof:") and
+              lower[len("bestof:"):].strip()):
+            body.strategy_name = preset
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"unknown preset '{preset}': choose an engine "
+                    f"({', '.join(sorted(registered))}) or a strategy preset "
+                    f"({', '.join(STRATEGY_PRESETS)})"
+                ),
+            )
         effective = _apply_inline_overrides(state.snapshot(), body)
         results = _recognise(
             body.image_url,

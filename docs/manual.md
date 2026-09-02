@@ -319,11 +319,21 @@ curl -s -X DELETE http://localhost:8000/config
 
 | 预设 | 评分函数 | 适用场景 |
 |------|----------|----------|
-| `bestof` / `bestof-smart` | 置信度 × 100 − 窜行惩罚 + 文本长度奖赏 | 综合最优,推荐 |
+| `bestof` / `bestof-smart` | 置信度 × 100 − 窜行惩罚 + 文本长度奖赏 + **语义流畅度** | 综合最优,**推荐** |
 | `bestof-fastest` | 耗时(elapsed_ms)最低 | 追求速度 |
 | `bestof-confidence` | 平均置信度最高 | 追求质量 |
 | `bestof-longest` | 文本最长 | 追求完整性 |
-| `bestof:<mode>` | 同上任意 mode | 等价于 `bestof-mode` |
+| `bestof-fluency` | 语义流畅度(短语密度 + CJK 标点 − 单字碎片惩罚) | 追求"读起来像人话",适合对比本地碎片化结果与 VL 连贯结果 |
+| `bestof:<mode>` | 同上任意 mode | 等价于 `bestof-mode`,冒号语法别名 |
+
+**bestof-fluency 评分信号**:
+
+- **短语密度**(上限 +15):每区域平均字符数,`mean_phrase_length`——句子越长越连贯
+- **CJK 标点比例**(上限 +5):句子标记(`,。！？、；:()`等)占比——有标点即像自然语言
+- **单字碎片惩罚**(上限 −25):`len(p)==1` 的区域计数 × 0.3——166 个单字的 rapidocr 输出会被明显扣减
+
+> 综合分 smart 已集成 fluency:对兰亭序实测,rapidocr 输出 166 个单字/短词(fluency ≈ −23),
+> siliconflow 输出完整古文句子(fluency ≈ +15),`bestof-fluency`/`bestof-smart` 均正确选硅基流动。
 
 > `bestof` 比 `seq*` 慢(所有引擎都跑),但能拿到所有候选里最好的结果——
 > 适合需要"不管用什么模型,只要识别质量最好"的场景。

@@ -4869,7 +4869,7 @@
       </div>
     </div>
 
-    <script id="archify-guided-views-data" type="application/json">[{"id":"main-path","label":"主调用路径","focus":["caller-http","serv","preset","strat","reg","rapid","models"],"note":"从 HTTP 入口经策略预设、策略层、引擎注册表到本地 OCR 出结果的主链路。"},{"id":"presets","label":"策略预设","focus":["preset","remote","strat","reg"],"note":"apply_strategy_preset 按 local/vl/fallback/quality 展开一次性 deepcopy;remote_engines() 划分本地/远程侧,JYKJ_OCR_REMOTE_ENGINES 可扩展。"},{"id":"engines","label":"引擎选择","focus":["reg","rapid","multi","sf","sfapi"],"note":"注册表惰性 import 三个引擎,siliconflow/multimodal 走远程 OpenAI 兼容端点。"},{"id":"input-config","label":"输入与运行时配置","focus":["inputs","serv","strat"],"note":"输入解析把图片/PDF/URL 统一成 PageImage(无扩展名 URL 按魔数判型);RuntimeConfig 支持运行时覆盖。"}]</script>
+    <script id="archify-guided-views-data" type="application/json">[{"id":"main-path","label":"主调用路径","focus":["caller-http","serv","preset","strat","reg","rapid","models"],"note":"从 HTTP 入口经策略预设、策略层、引擎注册表到本地 OCR 出结果的主链路。"},{"id":"presets","label":"策略预设","focus":["preset","remote","strat","reg"],"note":"14 个预设 + bestof:\u003cmode\u003e:seq* 走 StrategyEngine 顺序尝试,bestof* 走 BestofEngine 全跑打分。"},{"id":"engines","label":"引擎选择","focus":["reg","rapid","multi","sf","sfapi"],"note":"注册表惰性 import 三个引擎,siliconflow/multimodal 走远程 OpenAI 兼容端点。"},{"id":"input-config","label":"输入与运行时配置","focus":["inputs","serv","strat"],"note":"输入解析把图片/PDF/URL 统一成 PageImage(无扩展名 URL 按魔数判型);RuntimeConfig 支持运行时覆盖。"}]</script>
 
     <div class="guided-views no-print" id="guided-views" hidden aria-label="Guided diagram views">
       <button id="guided-view-prev" type="button" aria-label="Previous guided view" title="Previous guided view ([)">&#8592;</button>
@@ -4993,8 +4993,8 @@
         <text data-detail="context" x="105" y="209" class="t-muted" font-size="9" text-anchor="middle">jykj_ocr.ocr()</text>
         </g>
 
-        <g id="node-caller-http" data-node-id="caller-http" data-node-label="HTTP" tabindex="0" role="button" aria-label="Focus HTTP, FastAPI /ocr, 调用方入口" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="FastAPI /ocr" data-node-context="调用方入口">
-          <title>HTTP · FastAPI /ocr · 调用方入口</title>
+        <g id="node-caller-http" data-node-id="caller-http" data-node-label="HTTP" tabindex="0" role="button" aria-label="Focus HTTP, FastAPI /ocr /ocr/text, 调用方入口" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="FastAPI /ocr /ocr/text" data-node-context="调用方入口">
+          <title>HTTP · FastAPI /ocr /ocr/text · 调用方入口</title>
           <rect x="40" y="590" width="130" height="50" rx="6" class="c-mask"/>
           <rect x="40" y="590" width="130" height="50" rx="6" class="c-frontend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(46 596) scale(0.6875)">
@@ -5004,7 +5004,7 @@
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
           <text data-detail-anchor x="105" y="613" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">HTTP</text>
-        <text data-detail="context" x="105" y="629" class="t-muted" font-size="9" text-anchor="middle">FastAPI /ocr</text>
+        <text data-detail="context" x="105" y="629" class="t-muted" font-size="9" text-anchor="middle">FastAPI /ocr /ocr/text</text>
         </g>
 
         <g id="node-serv" data-node-id="serv" data-node-label="server.py" tabindex="0" role="button" aria-label="Focus server.py, RuntimeConfig 线程安全, 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="RuntimeConfig 线程安全" data-node-tag="POST /config 运行时覆盖" data-node-context="配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)">
@@ -5019,16 +5019,16 @@
         <text data-detail="fine" x="315" y="646" class="t-backend" font-size="7" text-anchor="middle">POST /config 运行时覆盖</text>
         </g>
 
-        <g id="node-preset" data-node-id="preset" data-node-label="apply_strategy_preset" tabindex="0" role="button" aria-label="Focus apply_strategy_preset, local/vl/fallback/quality, 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="local/vl/fallback/quality" data-node-tag="一次性 deepcopy" data-node-context="配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)">
-          <title>apply_strategy_preset · local/vl/fallback/quality · 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认) · 一次性 deepcopy</title>
+        <g id="node-preset" data-node-id="preset" data-node-label="apply_strategy_preset" tabindex="0" role="button" aria-label="Focus apply_strategy_preset, local/vl/seq*/bestof*/fallback, 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="local/vl/seq*/bestof*/fallback" data-node-tag="14 个预设 + bestof:&lt;mode&gt;" data-node-context="配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)">
+          <title>apply_strategy_preset · local/vl/seq*/bestof*/fallback · 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认) · 14 个预设 + bestof:&lt;mode&gt;</title>
           <rect x="240" y="350" width="150" height="64" rx="6" class="c-mask"/>
           <rect x="240" y="350" width="150" height="64" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(246 356) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-detail-anchor x="315" y="380" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">apply_strategy_preset</text>
-        <text data-detail="context" x="315" y="396" class="t-muted" font-size="9" text-anchor="middle">local/vl/fallback/quality</text>
-        <text data-detail="fine" x="315" y="406" class="t-backend" font-size="7" text-anchor="middle">一次性 deepcopy</text>
+        <text data-detail="context" x="315" y="396" class="t-muted" font-size="7.8" text-anchor="middle">local/vl/seq*/bestof*/fallback</text>
+        <text data-detail="fine" x="315" y="406" class="t-backend" font-size="7" text-anchor="middle">14 个预设 + bestof:&lt;mode&gt;</text>
         </g>
 
         <g id="node-remote" data-node-id="remote" data-node-label="remote_engines()" tabindex="0" role="button" aria-label="Focus remote_engines(), 本地/远程划分, 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="本地/远程划分" data-node-tag="JYKJ_OCR_REMOTE_ENGINES" data-node-context="配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)">
@@ -5043,26 +5043,26 @@
         <text data-detail="fine" x="515" y="406" class="t-cloud" font-size="7" text-anchor="middle">JYKJ_OCR_REMOTE_ENGINES</text>
         </g>
 
-        <g id="node-strat" data-node-id="strat" data-node-label="strategy.py" tabindex="0" role="button" aria-label="Focus strategy.py, 按序尝试+重试+计时, 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="按序尝试+重试+计时" data-node-context="配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)">
-          <title>strategy.py · 按序尝试+重试+计时 · 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)</title>
+        <g id="node-strat" data-node-id="strat" data-node-label="strategy.py" tabindex="0" role="button" aria-label="Focus strategy.py, StrategyEngine + BestofEngine, 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="StrategyEngine + BestofEngine" data-node-context="配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)">
+          <title>strategy.py · StrategyEngine + BestofEngine · 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)</title>
           <rect x="240" y="230" width="150" height="64" rx="6" class="c-mask"/>
           <rect x="240" y="230" width="150" height="64" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(246 236) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-detail-anchor x="315" y="260" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">strategy.py</text>
-        <text data-detail="context" x="315" y="276" class="t-muted" font-size="9" text-anchor="middle">按序尝试+重试+计时</text>
+        <text data-detail="context" x="315" y="276" class="t-muted" font-size="8.1" text-anchor="middle">StrategyEngine + BestofEngine</text>
         </g>
 
-        <g id="node-reg" data-node-id="reg" data-node-label="registry.py" tabindex="0" role="button" aria-label="Focus registry.py, build_pipeline / resolve_retry_check, 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="build_pipeline / resolve_retry_check" data-node-context="配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)">
-          <title>registry.py · build_pipeline / resolve_retry_check · 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)</title>
+        <g id="node-reg" data-node-id="reg" data-node-label="registry.py" tabindex="0" role="button" aria-label="Focus registry.py, build_pipeline 分流两条策略, 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="build_pipeline 分流两条策略" data-node-context="配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)">
+          <title>registry.py · build_pipeline 分流两条策略 · 配置与编排层(显式参数 &gt; 环境变量 &gt; YAML &gt; 默认)</title>
           <rect x="240" y="80" width="160" height="56" rx="6" class="c-mask"/>
           <rect x="240" y="80" width="160" height="56" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(246 86) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-detail-anchor x="320" y="106" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">registry.py</text>
-        <text data-detail="context" x="320" y="122" class="t-muted" font-size="7" text-anchor="middle">build_pipeline / resolve_retry_check</text>
+        <text data-detail="context" x="320" y="122" class="t-muted" font-size="9" text-anchor="middle">build_pipeline 分流两条策略</text>
         </g>
 
         <g id="node-inputs" data-node-id="inputs" data-node-label="inputs.py" tabindex="0" role="button" aria-label="Focus inputs.py, 图片/PDF/URL → PageImage, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="图片/PDF/URL → PageImage" data-node-context="Architecture component">
@@ -5382,9 +5382,9 @@
           <h3>入口与编排</h3>
         </div>
         <ul>
-          <li>&bull; CLI / Python API / HTTP 三入口</li>
-          <li>&bull; RuntimeConfig 线程安全,POST /config 运行时覆盖</li>
-          <li>&bull; 配置优先级:显式参数 &gt; 环境变量 &gt; YAML &gt; 默认</li>
+          <li>&bull; CLI / Python API / HTTP 三入口,便捷路由 /ocr/{preset} 路由即策略</li>
+          <li>&bull; preset 匹配引擎名→engine=preset;匹配预设名→strategy_name=preset</li>
+          <li>&bull; RuntimeConfig 线程安全;POST /config 运行时覆盖;GET /config 只回 has_api_key</li>
         </ul>
       </div>
 
@@ -5397,6 +5397,7 @@
           <li>&bull; import jykj_ocr 不加载 PIL/rapidocr/openai</li>
           <li>&bull; rapidocr 本地 ONNX,中英文,离线可用</li>
           <li>&bull; multimodal 通用 OpenAI 兼容,siliconflow 是其注册别名(默认模型/URL 在 config.py 注入)</li>
+          <li>&bull; build_pipeline:seq* 顺序尝试(StrategyEngine) vs bestof* 全跑打分(BestofEngine)</li>
         </ul>
       </div>
 
@@ -5406,9 +5407,11 @@
           <h3>策略预设与重试</h3>
         </div>
         <ul>
-          <li>&bull; local 仅本地 / vl 仅远程 VL / fallback 按序回退(默认) / quality 窜行降级+重排</li>
+          <li>&bull; seq* 顺序预设:local / vl / seq / seq-any(quality) / seq-low_conf / seq-line_overlap</li>
+          <li>&bull; bestof* 最佳预设:smart(默认) / fastest / confidence / longest / fluency + bestof:&lt;mode&gt;</li>
+          <li>&bull; bestof-fluency:短语密度 +15 + CJK 标点 +5 − 单字碎片 −25(兰亭序 sf≈+15,rapidocr≈−23)</li>
+          <li>&bull; build_pipeline 检测 strategy[bestof_mode] → BestofEngine;否则走 StrategyEngine</li>
           <li>&bull; apply_strategy_preset 返回 deepcopy,单次请求不改动 base config</li>
-          <li>&bull; retry_mode:no_text / low_confidence / line_overlap / any / none</li>
         </ul>
       </div>
     </div>

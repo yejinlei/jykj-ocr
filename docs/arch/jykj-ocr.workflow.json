@@ -1,1 +1,283 @@
-{"schema_version":1,"diagram_type":"workflow","meta":{"title":"jykj_ocr 请求处理流程","output":"jykj-ocr-workflow.html","quality_profile":"showcase","viewBox":[1520,600],"views":[{"id":"happy-path","label":"主流程","focus":["caller","preset","strategy","attempt","check","result"],"note":"从输入到结果:加载→一次性预设→策略→尝试引擎→检查→输出。"},{"id":"retry","label":"重试与切换","focus":["attempt","check"],"note":"no_text/low_confidence/line_overlap/any 未通过时,同引擎重试(≤max_retries)后切换下一引擎。"},{"id":"fail","label":"异常","focus":["check","result"],"note":"链耗尽取 ok 且最长结果;无任何 ok 则 StrategyError(HTTP 422)。"}]},"lanes":[{"id":"caller","label":"调用方"},{"id":"orch","label":"策略编排"},{"id":"eng","label":"引擎尝试"},{"id":"out","label":"输出"}],"phases":[{"id":"load","label":"加载","fromCol":0,"toCol":1},{"id":"try","label":"尝试","fromCol":2,"toCol":3,"variant":"emphasis"},{"id":"decide","label":"检查输出","fromCol":4,"toCol":5,"variant":"dashed"}],"groups":[{"id":"retry-loop","label":"重试/切换(≤max_retries)","lane":"eng","fromCol":2,"toCol":5,"variant":"emphasis"},{"id":"exhaust","label":"链耗尽","lane":"out","fromCol":4,"toCol":5,"variant":"security"}],"mainPath":["caller","preset","strategy","attempt","check","result"],"nodes":[{"id":"caller","lane":"caller","col":0,"type":"external","label":"调用方","sublabel":"CLI/API/HTTP","width":84},{"id":"preset","lane":"caller","col":1,"type":"backend","label":"策略预设","sublabel":"local/vl/fallback/quality","tag":"一次性 deepcopy","width":104},{"id":"strategy","lane":"orch","col":2,"type":"backend","label":"Strategy","sublabel":"按序尝试+计时","tag":"retry_mode","width":100},{"id":"attempt","lane":"eng","col":3,"type":"backend","label":"引擎[i]","sublabel":"rapidocr/multi/sf","width":92},{"id":"check","lane":"orch","col":4,"type":"security","label":"retry_check","sublabel":"no_text / any / none","tag":"5 种模式","width":116},{"id":"result","lane":"out","col":5,"type":"backend","label":"OCRResult","sublabel":"text+regions+ms","tag":"ok=True","width":92}],"edges":[{"id":"caller-preset","from":"caller","to":"preset","label":"strategy_name","variant":"default","labelDy":-28},{"id":"preset-strategy","from":"preset","to":"strategy","label":"引擎副本","variant":"default","labelDy":11},{"id":"strategy-attempt","from":"strategy","to":"attempt","label":"尝试","variant":"default"},{"id":"attempt-check","from":"attempt","to":"check","label":"结果","variant":"default","fromSide":"bottom","toSide":"top","route":"drop","labelDy":24},{"id":"check-result","from":"check","to":"result","label":"通过","variant":"emphasis","role":"main"},{"id":"check-attempt","from":"check","to":"attempt","label":"未通过:重试/切换","variant":"security","role":"return","fromSide":"top","toSide":"bottom","route":"outside-right","labelDy":-20},{"id":"check-result2","from":"check","to":"result","label":"链耗尽:最长ok","variant":"dashed","role":"branch","fromSide":"bottom","toSide":"top","route":"bottom-channel","labelDy":20}],"cards":[{"dot":"cyan","title":"主流程","items":["输入统一成 PageImage 后进入策略层","单次请求 strategy_name 一次性展开预设(deepcopy,不改 base config)","按引擎链顺序尝试,通过 retry_check 后输出 OCRResult"]},{"dot":"amber","title":"预设与重试","items":["local 仅本地 / vl 仅远程 VL / fallback 按序回退(默认) / quality 回退+窜行降级","no_text:无文本则重试;low_confidence:均值<min_confidence 则重试","line_overlap 无文本或窜行;any 低置信度或窜行任一;none 首个 ok 即返回","同引擎 ≤max_retries 后切换下一引擎"]},{"dot":"rose","title":"异常路径","items":["链耗尽:取所有尝试中 ok 且最长的结果","若无任何 ok 结果抛 StrategyError","StrategyError 映射为 HTTP 422"]},{"dot":"emerald","title":"计时与数据","items":["TimedOCR 装饰器计时 → elapsed_ms","OCRResult 含 text/regions/engine/model","TextRegion.from_parts 保留引擎置信度"]}]}
+{
+ "schema_version": 1,
+ "diagram_type": "workflow",
+ "meta": {
+  "title": "jykj_ocr 请求处理流程",
+  "output": "jykj-ocr-workflow.html",
+  "quality_profile": "showcase",
+  "viewBox": [
+   1520,
+   600
+  ],
+  "views": [
+   {
+    "id": "seq-path",
+    "label": "seq* 顺序分支",
+    "focus": [
+     "caller",
+     "preset",
+     "strategy",
+     "attempt",
+     "check",
+     "result"
+    ],
+    "note": "seq* 预设:StrategyEngine 按引擎顺序尝试,首个通过 retry_check 即返回。"
+   },
+   {
+    "id": "bestof",
+    "label": "bestof* 最佳分支",
+    "focus": [
+     "preset",
+     "attempt",
+     "result"
+    ],
+    "note": "bestof* 预设:BestofEngine 全跑打分,选评分最高的胜出(smart/fastest/confidence/longest/fluency)。"
+   },
+   {
+    "id": "fail",
+    "label": "异常",
+    "focus": [
+     "check",
+     "result"
+    ],
+    "note": "两条分支在链耗尽时行为一致:无 ok 结果则 StrategyError(HTTP 422)。"
+   }
+  ]
+ },
+ "lanes": [
+  {
+   "id": "caller",
+   "label": "调用方"
+  },
+  {
+   "id": "orch",
+   "label": "策略编排"
+  },
+  {
+   "id": "eng",
+   "label": "引擎尝试"
+  },
+  {
+   "id": "out",
+   "label": "输出"
+  }
+ ],
+ "phases": [
+  {
+   "id": "load",
+   "label": "加载",
+   "fromCol": 0,
+   "toCol": 1
+  },
+  {
+   "id": "try",
+   "label": "尝试",
+   "fromCol": 2,
+   "toCol": 3,
+   "variant": "emphasis"
+  },
+  {
+   "id": "decide",
+   "label": "检查输出",
+   "fromCol": 4,
+   "toCol": 5,
+   "variant": "dashed"
+  }
+ ],
+ "groups": [
+  {
+   "id": "retry-loop",
+   "label": "重试/切换(≤max_retries)",
+   "lane": "eng",
+   "fromCol": 2,
+   "toCol": 5,
+   "variant": "emphasis"
+  },
+  {
+   "id": "exhaust",
+   "label": "链耗尽",
+   "lane": "out",
+   "fromCol": 4,
+   "toCol": 5,
+   "variant": "security"
+  }
+ ],
+ "mainPath": [
+  "caller",
+  "preset",
+  "strategy",
+  "attempt",
+  "check",
+  "result"
+ ],
+ "nodes": [
+  {
+   "id": "caller",
+   "lane": "caller",
+   "col": 0,
+   "type": "external",
+   "label": "调用方",
+   "sublabel": "CLI/API/HTTP",
+   "width": 84
+  },
+  {
+   "id": "preset",
+   "lane": "caller",
+   "col": 1,
+   "type": "backend",
+   "label": "策略预设",
+   "sublabel": "seq* 顺序 vs bestof* 全跑",
+   "tag": "14 个预设",
+   "width": 118
+  },
+  {
+   "id": "strategy",
+   "lane": "orch",
+   "col": 2,
+   "type": "backend",
+   "label": "Strategy",
+   "sublabel": "StrategyEngine 按序尝试",
+   "tag": "retry_mode",
+   "width": 100
+  },
+  {
+   "id": "attempt",
+   "lane": "eng",
+   "col": 3,
+   "type": "backend",
+   "label": "引擎[i]",
+   "sublabel": "rapidocr/multi/sf",
+   "width": 92
+  },
+  {
+   "id": "check",
+   "lane": "orch",
+   "col": 4,
+   "type": "security",
+   "label": "retry_check",
+   "sublabel": "no_text / any / none",
+   "tag": "5 种模式",
+   "width": 116
+  },
+  {
+   "id": "result",
+   "lane": "out",
+   "col": 5,
+   "type": "backend",
+   "label": "OCRResult",
+   "sublabel": "text+regions+ms",
+   "tag": "ok=True",
+   "width": 100
+  }
+ ],
+ "edges": [
+  {
+   "id": "caller-preset",
+   "from": "caller",
+   "to": "preset",
+   "label": "strategy_name",
+   "variant": "default",
+   "labelDy": -28
+  },
+  {
+   "id": "preset-strategy",
+   "from": "preset",
+   "to": "strategy",
+   "label": "引擎副本",
+   "variant": "default",
+   "labelDy": 11
+  },
+  {
+   "id": "strategy-attempt",
+   "from": "strategy",
+   "to": "attempt",
+   "label": "尝试",
+   "variant": "default"
+  },
+  {
+   "id": "attempt-check",
+   "from": "attempt",
+   "to": "check",
+   "label": "结果",
+   "variant": "default",
+   "fromSide": "bottom",
+   "toSide": "top",
+   "route": "drop",
+   "labelDy": 24
+  },
+  {
+   "id": "check-result",
+   "from": "check",
+   "to": "result",
+   "label": "通过",
+   "variant": "emphasis",
+   "role": "main"
+  },
+  {
+   "id": "check-attempt",
+   "from": "check",
+   "to": "attempt",
+   "label": "未通过:重试/切换",
+   "variant": "security",
+   "role": "return",
+   "fromSide": "top",
+   "toSide": "bottom",
+   "route": "outside-right",
+   "labelDy": -20
+  },
+  {
+   "id": "check-result2",
+   "from": "check",
+   "to": "result",
+   "label": "链耗尽:最长ok",
+   "variant": "dashed",
+   "role": "branch",
+   "fromSide": "bottom",
+   "toSide": "top",
+   "route": "bottom-channel",
+   "labelDy": 20
+  }
+ ],
+ "cards": [
+  {
+   "dot": "cyan",
+   "title": "主流程",
+   "items": [
+    "输入统一成 PageImage 后进入策略层",
+    "单次请求 strategy_name 一次性展开预设(deepcopy,不改 base config)",
+    "便捷路由 /ocr/{preset}:路由即策略——名字匹配引擎→engine,匹配预设→strategy_name",
+    "根据策略预设走两条分支:seq* 顺序尝试 vs bestof* 全跑打分"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "预设与重试",
+   "items": [
+    "seq* 顺序预设:按引擎顺序尝试,首个通过 retry_check 即返回(StrategyEngine)",
+    "local 仅本地 / vl 仅远程 VL / seq-any 窜行降级+重排 / seq-low_conf / seq-line_overlap",
+    "bestof* 最佳预设:所有引擎各跑一次,按评分函数选最佳(BestofEngine)",
+    "smart(默认,含 fluency) / fastest / confidence / longest / fluency + bestof:<mode>",
+    "bestof 比 seq* 慢(所有引擎都跑),但保证拿到候选里最好的结果"
+   ]
+  },
+  {
+   "dot": "rose",
+   "title": "异常路径",
+   "items": [
+    "seq* 链耗尽:取所有尝试中 ok 且最长的结果",
+    "bestof 链耗尽:所有引擎均失败或无 ok 结果",
+    "无任何 ok 结果抛 StrategyError,映射为 HTTP 422"
+   ]
+  },
+  {
+   "dot": "emerald",
+   "title": "计时与数据",
+   "items": [
+    "TimedOCR 装饰器计时 → elapsed_ms(被 bestof-fastest 使用)",
+    "OCRResult 含 text/regions/engine/model",
+    "TextRegion.from_parts 保留引擎置信度(不静默抹平成 1.0)",
+    "bestof-fluency 评分:短语密度(+15) + CJK 标点(+5) − 单字碎片(−25 上限)"
+   ]
+  }
+ ]
+}
