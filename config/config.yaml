@@ -4,12 +4,21 @@
 # 策略链：按顺序尝试，前面的引擎失败/无文字时自动切换到下一个。
 #
 # name —— 命名预设（默认 fallback；API/CLI 可用 strategy_name 一次性覆盖）:
-#   local     只用本地引擎（rapidocr 等），远程引擎全部禁用
-#   vl        只用 VL 大模型（siliconflow/multimodal），本地引擎禁用
-#   fallback  按 engines 顺序回退（不改变 enabled 标记，即本文件的配置）
-#   quality   fallback + 窜行降级（检测到合并/重叠框就换下一引擎）
-#             + 阅读顺序重排（按坐标聚类重建文本）
-# retry_mode —— 精细控制（quality 预设会自动置为 any）:
+#   local             只用本地引擎（rapidocr 等），远程引擎全部禁用
+#   vl                只用 VL 大模型（siliconflow/multimodal），本地引擎禁用
+#   seq               按 engines 顺序回退（retry_mode=no_text，默认行为）
+#   seq-any           seq + any 重试谓词 + 阅读顺序重排（= quality）
+#   seq-low_conf      seq + low_confidence 重试
+#   seq-line_overlap  seq + line_overlap 重试（无文字或窜行即降级）
+#   bestof            所有引擎各跑一次，按 score 选最佳（默认 smart 模式）
+#   bestof-smart      同上；smart = 置信度 − 窜行惩罚 + 文本长度奖赏
+#   bestof-fastest    按耗时（elapsed_ms）最低选
+#   bestof-confidence 按平均置信度最高选
+#   bestof-longest    按识别文本最长选
+#   bestof:<mode>     等价于 bestof-mode（mode 见上）
+#   fallback          seq 的旧别名（保留兼容）
+#   quality           seq-any 的旧别名（保留兼容）
+# retry_mode —— 精细控制（仅 seq* 与 legacy 预设使用；bestof* 无需设置）:
 #   no_text         无文字时重试（默认）
 #   low_confidence  平均置信度 < min_confidence 时重试
 #   line_overlap    无文字或版面疑似窜行时重试

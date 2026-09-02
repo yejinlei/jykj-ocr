@@ -72,11 +72,22 @@ docker compose up -d
   - `POST /ocr`(multipart,文件 + 可选 `engine`/`model`/`prompt`/`strategy`/`strategy_name`/`max_pages`/`dpi`/`format`)
   - `POST /ocr/text`(image_url 文本请求,body 支持 `strategy_name`)
 - **Python API**:`jykj_ocr.ocr(source, engine=None, config=None, config_path=None, max_pages=None, dpi=200, retries=1, strategy_name=None) -> List[OCRResult]`。
-- **策略预设**(`strategy_name`,一次性):`local` 仅本地引擎 / `vl` 仅远程 VL 引擎 /
-  `fallback` 按配置顺序回退(默认) / `quality` 回退+窜行降级(retry_mode `any`)+阅读顺序重排
-  (`output.reorder_lines`)。`apply_strategy_preset` 返回 deepcopy,输入 config 不被改动;
-  未知名称 CLI 报 argparse 错、HTTP 返回 400。远程/本地划分走 `remote_engines()`
-  (内置 siliconflow/multimodal + 环境变量 `JYKJ_OCR_REMOTE_ENGINES="a,b"`),新引擎默认归本地侧。
+- **策略预设**(`strategy_name`,一次性):
+  - 顺序预设 `seq*`(走 `StrategyEngine`,首个命中即返回):
+    `seq`(retry=no_text)/ `seq-any`(retry=any,reorder=on)= quality /
+    `seq-low_conf`(retry=low_confidence)/ `seq-line_overlap`(retry=line_overlap)。
+    `local` 仅本地引擎 / `vl` 仅远程 VL 引擎(同 `StrategyEngine`,改 enabled 标志)。
+  - 最佳预设 `bestof*`(走 `BestofEngine`,所有引擎各跑一次,按评分选最佳):
+    `bestof`/`bestof-smart`(置信度−窜行惩罚+文本长度奖赏)/
+    `bestof-fastest`(elapsed_ms 最低)/`bestof-confidence`(平均置信度最高)/
+    `bestof-longest`(文本最长)/`bestof:<mode>`(语法别名)。
+  - legacy 别名:`fallback` == `seq` / `quality` == `seq-any`(保留兼容)。
+  - `apply_strategy_preset` 返回 deepcopy,输入 config 不被改动;未知名称 CLI 报
+    argparse 错、HTTP 返回 400。远程/本地划分走 `remote_engines()`(内置
+    siliconflow/multimodal + 环境变量 `JYKJ_OCR_REMOTE_ENGINES="a,b"`),新引擎默认归
+    本地侧。
+  - `build_pipeline` 检测到 `strategy["bestof_mode"]` 时组装 `BestofEngine`;
+    `engine_name` 强制单个引擎时绕过 bestof,仍走 `StrategyEngine`。
 - **retry_mode**:`no_text`(默认)/ `low_confidence` / `line_overlap`(无文字或窜行) /
   `any`(低置信度或窜行任一) / `none`。窜行检测在 `models.detect_line_overlap`
   (超长宽比合并框 + 双轴重叠框),重排在 `models.rebuild_text_from_regions`。

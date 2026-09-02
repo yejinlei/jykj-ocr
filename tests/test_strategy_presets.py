@@ -13,6 +13,7 @@ import pytest
 from jykj_ocr.config import Config, from_mapping
 from jykj_ocr.engine.registry import (
     STRATEGY_PRESETS,
+    _SEQ_PRESETS,
     apply_strategy_preset,
     build_pipeline,
     engines_from_config,
@@ -21,8 +22,10 @@ from jykj_ocr.engine.registry import (
 )
 from jykj_ocr.models import BoundingBox, OCRResult, TextRegion
 from jykj_ocr.strategy import (
+    BestofEngine,
     StrategyEngine,
     combine_predicates,
+    resolve_bestof_score,
     should_retry_line_overlap,
 )
 
@@ -260,3 +263,206 @@ class TestEnginesFromConfigAndPipeline:
         assert pipeline.retry_check(None, empty) is True  # still no_text
         good = _result("t", confidence=0.3)
         assert pipeline.retry_check(None, good) is False  # not low_confidence
+
+
+# ---------------------------------------------------------------------------
+# seq* presets (seq / seq-any / seq-low_conf / seq-line_overlap)
+# ---------------------------------------------------------------------------
+
+class TestSeqPresets:
+    def test_seq_retry_mode_map(self):
+        # Every seq* preset has the retry_mode it advertises.
+        assert _SEQ_PRESETS["seq"][0] == "no_text"
+        assert _SEQ_PRESETS["seq-any"][0] == "any"
+        assert _SEQ_PRESETS["seq-low_conf"][0] == "low_confidence"
+        assert _SEQ_PRESETS["seq-line_overlap"][0] == "line_overlap"
+
+    def test_seq_aliases_do_not_mutate_enabled(self):
+        cfg = apply_strategy_preset(_config(), "seq")
+        flags = {e.name: e.enabled for e in cfg.engines}
+        assert flags == {"rapidocr": True, "siliconflow": True, "multimodal": False}
+        assert cfg.strategy["retry_mode"] == "no_text"
+        assert "reorder_lines" not in cfg.output
+
+    def test_seq_any_matches_quality(self):
+        seq = apply_strategy_preset(_config(), "seq-any")
+        quality = apply_strategy_preset(_config(), "quality")
+        assert seq.strategy["retry_mode"] == quality.strategy["retry_mode"] == "any"
+        assert seq.output["reorder_lines"] is True
+        assert quality.output["reorder_lines"] is True
+
+    def test_seq_low_conf_sets_mode(self):
+        cfg = apply_strategy_preset(_config(), "seq-low_conf")
+        assert cfg.strategy["retry_mode"] == "low_confidence"
+        assert cfg.strategy["name"] == "seq-low_conf"
+
+    def test_seq_line_overlap_sets_mode(self):
+        cfg = apply_strategy_preset(_config(), "seq-line_overlap")
+        assert cfg.strategy["retry_mode"] == "line_overlap"
+        assert cfg.strategy["name"] == "seq-line_overlap"
+
+    def test_seq_any_build_pipeline_any_predicate(self):
+        cfg = apply_strategy_preset(_config(), "seq-any")
+        pipeline = build_pipeline(cfg)
+        assert isinstance(pipeline, StrategyEngine)
+        garbled = _result("t", confidence=0.99, boxes=[(0, 0, 40, 10), (0, 0, 300, 10)])
+        assert pipeline.retry_check(None, garbled) is True
+        low = _result("t", confidence=0.2)
+        assert pipeline.retry_check(None, low) is True
+
+
+# ---------------------------------------------------------------------------
+# bestof* presets
+# ---------------------------------------------------------------------------
+
+class TestBestofPresets:
+    def test_bestof_score_mode_map(self):
+        assert _SEQ_PRESETS["bestof"][3] == "smart"
+        assert _SEQ_PRESETS["bestof-smart"][3] == "smart"
+        assert _SEQ_PRESETS["bestof-fastest"][3] == "fastest"
+        assert _SEQ_PRESETS["bestof-confidence"][3] == "highest_confidence"
+        assert _SEQ_PRESETS["bestof-longest"][3] == "longest"
+
+    def test_bestof_sets_bestof_mode(self):
+        cfg = apply_strategy_preset(_config(), "bestof")
+        assert cfg.strategy["bestof_mode"] == "smart"
+        assert "retry_mode" not in cfg.strategy
+        assert "reorder_lines" not in cfg.output
+
+    def test_bestof_mode_aliases(self):
+        cfg_smart = apply_strategy_preset(_config(), "bestof-smart")
+        cfg_fastest = apply_strategy_preset(_config(), "bestof-fastest")
+        cfg_conf = apply_strategy_preset(_config(), "bestof-confidence")
+        cfg_longest = apply_strategy_preset(_config(), "bestof-longest")
+        assert cfg_smart.strategy["bestof_mode"] == "smart"
+        assert cfg_fastest.strategy["bestof_mode"] == "fastest"
+        assert cfg_conf.strategy["bestof_mode"] == "highest_confidence"
+        assert cfg_longest.strategy["bestof_mode"] == "longest"
+
+    def test_bestof_colon_syntax(self):
+        cfg = apply_strategy_preset(_config(), "bestof:fastest")
+        assert cfg.strategy["bestof_mode"] == "fastest"
+        assert cfg.strategy["name"] == "bestof"
+
+    def test_bestof_colon_invalid_mode_raises(self):
+        with pytest.raises(ValueError):
+            apply_strategy_preset(_config(), "bestof:banana")
+
+    def test_bestof_colon_empty_raises(self):
+        with pytest.raises(ValueError):
+            apply_strategy_preset(_config(), "bestof:")
+
+
+# ---------------------------------------------------------------------------
+# BestofEngine behaviour
+# ---------------------------------------------------------------------------
+
+class _FakeEngine:
+    def __init__(self, name, result=None, error=None):
+        self.name = name
+        self._result = result
+        self._error = error
+        self._config = None
+
+    @property
+    def config(self):
+        return self._config
+
+    def recognise(self, image):
+        if self._error is not None:
+            raise self._error
+        result = self._result
+        result.engine = self.name
+        return result
+
+
+class TestBestofEngine:
+    def _r(self, text, confidence=0.9, elapsed_ms=100):
+        result = _result(text, confidence=confidence)
+        result.elapsed_ms = elapsed_ms
+        return result
+
+    def test_all_fail_raises(self):
+        engines = [
+            _FakeEngine("a", error=RuntimeError("boom a")),
+            _FakeEngine("b", error=RuntimeError("boom b")),
+        ]
+        bestof = BestofEngine(engines, score_mode="smart")
+        with pytest.raises(Exception):
+            bestof.recognise(None)
+
+    def test_picks_highest_confidence(self):
+        engines = [
+            _FakeEngine("low", result=self._r("hi", confidence=0.4, elapsed_ms=50)),
+            _FakeEngine("high", result=self._r("hi", confidence=0.99, elapsed_ms=200)),
+        ]
+        bestof = BestofEngine(engines, score_mode="highest_confidence")
+        winner = bestof.recognise(None)
+        assert winner.engine == "high"
+
+    def test_picks_fastest(self):
+        engines = [
+            _FakeEngine("slow", result=self._r("hi", confidence=0.99, elapsed_ms=500)),
+            _FakeEngine("fast", result=self._r("hi", confidence=0.6, elapsed_ms=20)),
+        ]
+        bestof = BestofEngine(engines, score_mode="fastest")
+        winner = bestof.recognise(None)
+        assert winner.engine == "fast"
+
+    def test_picks_longest(self):
+        engines = [
+            _FakeEngine("short", result=self._r("hi", confidence=0.99)),
+            _FakeEngine("long", result=self._r("hello world", confidence=0.5)),
+        ]
+        bestof = BestofEngine(engines, score_mode="longest")
+        winner = bestof.recognise(None)
+        assert winner.engine == "long"
+
+    def test_smart_penalises_garbled(self):
+        # A high-confidence garbled result should lose to a clean one.
+        clean = _result("ok", confidence=0.85, boxes=[(0, 0, 60, 12)])
+        clean.elapsed_ms = 100
+        garbled = _result("bad", confidence=0.99, boxes=[(0, 0, 40, 10), (0, 0, 300, 10)])
+        garbled.elapsed_ms = 50
+        engines = [
+            _FakeEngine("garbled", result=garbled),
+            _FakeEngine("clean", result=clean),
+        ]
+        bestof = BestofEngine(engines, score_mode="smart")
+        winner = bestof.recognise(None)
+        assert winner.engine == "clean"
+
+    def test_summary_reports_mode(self):
+        engines = [_FakeEngine("x", result=self._r("hi"))]
+        bestof = BestofEngine(engines, score_mode="fastest")
+        summary = bestof.summary()
+        assert summary["engines"] == ["x"]
+        assert "fastest" in summary["mode"]
+
+
+class TestBuildPipelineBestof:
+    def test_bestof_preset_builds_BestofEngine(self):
+        cfg = apply_strategy_preset(_config(), "bestof-smart")
+        pipeline = build_pipeline(cfg)
+        assert isinstance(pipeline, BestofEngine)
+        assert not isinstance(pipeline, StrategyEngine)
+        assert "smart" in pipeline.summary()["mode"]
+
+    def test_fallback_still_builds_StrategyEngine(self):
+        cfg = apply_strategy_preset(_config(), "fallback")
+        pipeline = build_pipeline(cfg)
+        assert isinstance(pipeline, StrategyEngine)
+        assert not isinstance(pipeline, BestofEngine)
+
+    def test_quality_still_builds_StrategyEngine(self):
+        cfg = apply_strategy_preset(_config(), "quality")
+        pipeline = build_pipeline(cfg)
+        assert isinstance(pipeline, StrategyEngine)
+        assert "any" == cfg.strategy["retry_mode"]
+        assert cfg.output["reorder_lines"] is True
+
+    def test_forced_engine_always_StrategyEngine(self):
+        cfg = apply_strategy_preset(_config(), "bestof-smart")
+        pipeline = build_pipeline(cfg, engine_name="rapidocr")
+        assert isinstance(pipeline, StrategyEngine)
+        assert pipeline.engines() == ["rapidocr"]

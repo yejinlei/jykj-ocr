@@ -144,10 +144,143 @@ class TimedOCR:
         return result
 
 
+# ---------------------------------------------------------------------------
+# Bestof: run every engine once, pick the best by a chosen score.
+# ---------------------------------------------------------------------------
+
+#: Score mode names understood by ``BestofEngine``.
+BESTOF_MODES = ("smart", "fastest", "highest_confidence", "longest")
+
+_GARBLED_PENALTY = 20.0  # synthetic confidence points subtracted for garbled layout
+
+
+def _mean_confidence(result: OCRResult) -> float:
+    regions = [r.confidence for r in result.regions if (r.text or "").strip()]
+    return sum(regions) / len(regions) if regions else 0.0
+
+
+def _is_garbled(result: OCRResult) -> bool:
+    try:
+        from .models import detect_line_overlap
+    except Exception:
+        return False
+    return detect_line_overlap(result)
+
+
+def _score_smart(result: OCRResult) -> float:
+    """Composite score: confidence - garbled penalty + small text-length bonus."""
+    if not result.ok:
+        return float("-inf")
+    s = _mean_confidence(result) * 100.0
+    if _is_garbled(result):
+        s -= _GARBLED_PENALTY
+    # gentle nudge toward non-empty text
+    s += min(1.0, len((result.text or "") or ""))
+    return s
+
+
+def _score_fastest(result: OCRResult) -> float:
+    return -float(getattr(result, "elapsed_ms", 0) or 0)  # lower latency wins
+
+
+def _score_highest_confidence(result: OCRResult) -> float:
+    return _mean_confidence(result) if result.ok else float("-inf")
+
+
+def _score_longest(result: OCRResult) -> float:
+    return len((result.text or "") or "") if result.ok else float("-inf")
+
+
+_BESTOF_SCORE: Dict[str, Callable[[OCRResult], float]] = {
+    "smart": _score_smart,
+    "fastest": _score_fastest,
+    "highest_confidence": _score_highest_confidence,
+    "longest": _score_longest,
+}
+
+
+def resolve_bestof_score(mode: Optional[str]) -> Callable[[OCRResult], float]:
+    key = (mode or "smart").strip().lower()
+    try:
+        return _BESTOF_SCORE[key]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown bestof mode {mode!r}; choose one of "
+            f"{', '.join(BESTOF_MODES)}"
+        ) from exc
+
+
+class BestofEngine:
+    """Run all wrapped engines once and return the highest-scoring result.
+
+    Used by the ``bestof`` strategy preset. Differs from :class:`StrategyEngine`
+    (which stops on the first acceptable result) — ``bestof`` *always* runs
+    every engine and picks the winner by ``score_fn``. This is slower but
+    guarantees you get the best of what's available, e.g. choosing between a
+    fast local OCR and a slow remote VL model.
+    """
+
+    def __init__(
+        self,
+        engines: Sequence[Any],
+        *,
+        score_mode: str = "smart",
+    ) -> None:
+        self._engines: List[Any] = list(engines)
+        if not self._engines:
+            raise StrategyError("bestof needs at least one engine")
+        self.score_fn = resolve_bestof_score(score_mode)
+
+    def engines(self) -> List[str]:
+        return [e.name for e in self._engines]
+
+    def recognise(self, image: Any) -> OCRResult:
+        """Run every engine, pick the highest-scoring ``ok`` result."""
+        scored: List[tuple] = []
+        last_error: Optional[Exception] = None
+
+        for engine in self._engines:
+            try:
+                result = engine.recognise(image)
+            except Exception as exc:
+                last_error = exc
+                LOGGER.warning("bestof: %s failed: %s", engine.name, exc)
+                continue
+            s = self.score_fn(result)
+            scored.append((s, result))
+            LOGGER.debug(
+                "bestof: %s -> score=%.2f ok=%s", engine.name, s, result.ok
+            )
+
+        if not scored:
+            raise StrategyError(
+                f"bestof: all {len(self._engines)} engine(s) failed"
+                + (f": {last_error}" if last_error else "")
+            ) from (last_error if last_error else None)
+
+        # prefer highest score, breaking ties by engine order (already inserted)
+        scored.sort(key=lambda kv: kv[0], reverse=True)
+        winner = scored[0][1]
+        if not winner.ok:
+            raise StrategyError(
+                f"bestof exhausted {len(self._engines)} engine(s), "
+                f"{len(scored)} result(s), none ok"
+            )
+        return winner
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "engines": self.engines(),
+            "mode": getattr(self.score_fn, "__name__", "custom"),
+        }
+
+
 __all__ = [
     "StrategyEngine",
     "StrategyError",
     "TimedOCR",
+    "BestofEngine",
+    "BESTOF_MODES",
     "combine_predicates",
     "should_retry_line_overlap",
     "should_retry_low_confidence",

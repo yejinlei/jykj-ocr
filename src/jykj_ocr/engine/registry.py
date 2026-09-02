@@ -14,9 +14,11 @@ import copy
 
 from ..config import Config, EngineConfig, normalise_engine
 from ..strategy import (
+    BestofEngine,
     StrategyEngine,
     StrategyFn,
     combine_predicates,
+    resolve_bestof_score,
     should_retry_line_overlap,
     should_retry_low_confidence,
     should_retry_no_text,
@@ -39,7 +41,63 @@ def remote_engines() -> tuple:
 
 
 #: Named strategy presets understood by ``strategy.name`` / ``strategy_name=``.
-STRATEGY_PRESETS = ("local", "vl", "fallback", "quality")
+#
+# ``seq*`` presets all use :class:`StrategyEngine` (first-acceptable-wins, in
+# engine order). They differ only by retry predicate and whether the final
+# result is re-ordered by position::
+#
+#   seq                 retry_mode=no_text, reorder=off          (default)
+#   seq-any             retry_mode=any,     reorder=on           (quality)
+#   seq-low_conf        retry_mode=low_confidence, reorder=off
+#   seq-line_overlap    retry_mode=line_overlap, reorder=off
+#
+# ``bestof*`` presets use :class:`BestofEngine` — every engine runs once and
+# the winner is chosen by a score function; the result is never re-ordered::
+#
+#   bestof / bestof-smart       score = confidence - garbled penalty
+#   bestof-fastest              lowest elapsed_ms
+#   bestof-confidence           highest mean region confidence
+#   bestof-longest              longest text
+#   bestof:<mode>               syntax alias for any of the modes above
+#
+# Legacy aliases kept for backwards compatibility:
+#   fallback  == seq
+#   quality   == seq-any
+STRATEGY_PRESETS = (
+    "local",
+    "vl",
+    "seq",
+    "seq-any",
+    "seq-low_conf",
+    "seq-line_overlap",
+    "bestof",
+    "bestof-smart",
+    "bestof-fastest",
+    "bestof-confidence",
+    "bestof-longest",
+    # legacy
+    "fallback",
+    "quality",
+)
+
+#: (retry_mode, reorder_lines, is_bestof, bestof_score_mode)
+_SEQ_PRESETS = {
+    "local": ("no_text", False, False, None),
+    "vl": ("no_text", False, False, None),
+    "seq": ("no_text", False, False, None),
+    "seq-any": ("any", True, False, None),
+    "seq-low_conf": ("low_confidence", False, False, None),
+    "seq-line_overlap": ("line_overlap", False, False, None),
+    # legacy aliases
+    "fallback": ("no_text", False, False, None),
+    "quality": ("any", True, False, None),
+    # bestof presets
+    "bestof": (None, False, True, "smart"),
+    "bestof-smart": (None, False, True, "smart"),
+    "bestof-fastest": (None, False, True, "fastest"),
+    "bestof-confidence": (None, False, True, "highest_confidence"),
+    "bestof-longest": (None, False, True, "longest"),
+}
 
 
 def build_engine(name: str, config: Config) -> engine_pkg.BaseEngine:
@@ -110,36 +168,60 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
     Presets (see ``STRATEGY_PRESETS``):
       - ``local``    only local (rapidocr-family) engines; plain no_text retry
       - ``vl``       only remote VL engines; first enabled remote engine wins
-      - ``fallback`` every enabled engine, tried in config order
-      - ``quality``  fallback + line-overlap demotion + reading-order rebuild
+      - ``seq*``     first-acceptable-wins (:class:`StrategyEngine`); differ by
+                     retry predicate and whether the final result is re-ordered
+      - ``bestof*``  every engine runs once (:class:`BestofEngine`); the winner
+                     is picked by a score function; never re-ordered
 
     ``name`` is written into ``strategy["name"]`` so downstream code (text
-    reorder) can see which preset produced this config. Unknown names raise
-    ``ValueError`` listing the valid presets.
+    reorder, pipeline assembly) can see which preset produced this config.
+    Unknown names raise ``ValueError`` listing the valid presets.
 
     Adding engines later: a newly registered engine needs no preset change —
     ``local`` keeps it (unless its name is in ``remote_engines()``), ``vl``
-    excludes it, and ``fallback``/``quality`` use whatever ``enabled`` flag the
+    excludes it, and ``seq*``/``bestof*`` use whatever ``enabled`` flag the
     config gives it. Mark a new remote-only vendor by adding its name to
     ``JYKJ_OCR_REMOTE_ENGINES``.
     """
     key = (name or "").strip().lower()
+    # ``bestof:<mode>`` syntax — validate the mode before looking up the preset.
+    bestof_score_mode = None
+    if key.startswith("bestof:"):
+        mode = key[len("bestof:"):].strip()
+        if not mode:
+            raise ValueError(
+                f"empty bestof mode {name!r}; choose one of {', '.join(STRATEGY_PRESETS)}"
+            )
+        try:
+            resolve_bestof_score(mode)
+        except ValueError:
+            raise ValueError(
+                f"unknown strategy {name!r}; choose one of {', '.join(STRATEGY_PRESETS)}"
+            )
+        bestof_score_mode = mode
+        key = "bestof"
+
     if key not in STRATEGY_PRESETS:
         raise ValueError(
             f"unknown strategy {name!r}; choose one of {', '.join(STRATEGY_PRESETS)}"
         )
+
     cfg = copy.deepcopy(config)
     strategy = dict(cfg.strategy)
     output = dict(cfg.output)
 
+    retry_mode, reorder_lines, is_bestof, _preset_bestof_mode = _SEQ_PRESETS[key]
+    if is_bestof and bestof_score_mode is None:
+        bestof_score_mode = _preset_bestof_mode
+
     def _is_remote(engine: EngineConfig) -> bool:
         return normalise_engine(engine.name) in remote_engines()
 
+    # ``local`` / ``vl`` reshape which engines are enabled; all other presets
+    # leave enabled flags alone.
     if key == "local":
         for engine in cfg.engines:
             engine.enabled = not _is_remote(engine)
-        strategy["retry_mode"] = "no_text"
-        output.pop("reorder_lines", None)
     elif key == "vl":
         remotes = [e for e in cfg.engines if _is_remote(e)]
         if not any(e.enabled for e in remotes):
@@ -153,14 +235,25 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
         for engine in cfg.engines:
             if not _is_remote(engine):
                 engine.enabled = False
-        strategy.setdefault("retry_mode", "no_text")
-        output.pop("reorder_lines", None)
-    elif key == "fallback":
-        strategy.setdefault("retry_mode", "no_text")
-        output.pop("reorder_lines", None)
-    else:  # quality
-        strategy["retry_mode"] = "any"
+
+    # Write the retry mode (bestof family has no retry predicate).
+    if retry_mode is not None:
+        strategy["retry_mode"] = retry_mode
+    else:
+        strategy.pop("retry_mode", None)
+
+    # Bestof presets mark themselves so build_pipeline knows to assemble a
+    # :class:`BestofEngine` instead of :class:`StrategyEngine`.
+    if is_bestof:
+        strategy["bestof_mode"] = bestof_score_mode
+    else:
+        strategy.pop("bestof_mode", None)
+
+    # Reading-order rebuild flag (only ``seq-any`` / ``quality`` set it).
+    if reorder_lines:
         output["reorder_lines"] = True
+    else:
+        output.pop("reorder_lines", None)
 
     strategy["name"] = key
     cfg.strategy = strategy
@@ -170,7 +263,7 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
 
 def build_pipeline(
     config: Config, engine_name: Optional[str] = None
-) -> StrategyEngine:
+) -> object:
     """Assemble the strategy chain exactly the way CLI / API / package all do.
 
     ``engine_name`` forces a single engine and ignores the configured chain;
@@ -178,12 +271,23 @@ def build_pipeline(
     predicate. A ``strategy.name`` in the config is treated as documentation of
     the active preset — presets are applied earlier via
     :func:`apply_strategy_preset`, never re-applied here.
+
+    Bestof presets (strategy["bestof_mode"] set) assemble a
+    :class:`BestofEngine` instead of :class:`StrategyEngine`.
     """
     if engine_name:
         engines = [build_engine(engine_name, config)]
     else:
         engines = engines_from_config(config)
     strategy_cfg = config.strategy or {}
+
+    # Bestof family — run every engine, pick the winner by a score function.
+    # A forced engine_name means "don't use the strategy, just this one" — skip
+    # bestof in that case.
+    bestof_mode = strategy_cfg.get("bestof_mode")
+    if bestof_mode and not engine_name:
+        return BestofEngine(engines, score_mode=bestof_mode)
+
     return build_strategy(
         engines,
         retries=int(strategy_cfg.get("max_retries", 1)),

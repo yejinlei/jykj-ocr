@@ -71,7 +71,7 @@ cp .env.example .env
 
 ```yaml
 strategy:
-  name: fallback             # local | vl | fallback | quality(默认预设)
+  name: fallback             # local | vl | seq* | bestof* | fallback | quality(默认预设)
   max_retries: 1
   retry_mode: no_text        # no_text | low_confidence | line_overlap | any | none
   min_confidence: 0.7
@@ -122,7 +122,7 @@ python -m jykj_ocr [source] [options]
 | `--max-pages` | 配置 | PDF 页数上限 |
 | `--dpi` | 200 | PDF 渲染 DPI |
 | `-c` | `config/config.yaml` | 配置文件 |
-| `--strategy-name` | 配置默认 | 一次性预设:`local`/`vl`/`fallback`/`quality`(见 §7) |
+| `--strategy-name` | 配置默认 | 一次性预设:`local`/`vl`/`seq*`/`bestof*`(见 §7) |
 | `serve` | — | 启动 HTTP 服务(`--host`/`--port`) |
 | `--list-engines` | — | 列出引擎后退出 |
 
@@ -149,6 +149,9 @@ python -m jykj_ocr scan.png --strategy-name vl
 
 # 命名预设:rapidocr 窜行自动降级 + 阅读顺序重排
 python -m jykj_ocr scan.png --strategy-name quality
+
+# 最佳策略:所有引擎各跑一次,选识别质量最优
+python -m jykj_ocr scan.png --strategy-name bestof
 ```
 
 ## 5. Python API
@@ -170,6 +173,9 @@ results = jykj_ocr.ocr("report.pdf", max_pages=10, dpi=300)
 
 # 一次性命名预设(不改配置文件)
 results = jykj_ocr.ocr("stamp.png", strategy_name="quality")
+
+# 最佳策略(所有引擎各跑一次)
+results = jykj_ocr.ocr("scan.png", strategy_name="bestof-smart")
 
 # 只要拼接好的 markdown
 text = jykj_ocr.ocr_to_text("scan.png", engine="rapidocr")
@@ -220,7 +226,7 @@ multipart 表单:
 | `model` | — | 覆盖模型(仅远程引擎) |
 | `prompt` | — | 覆盖 prompt(仅远程引擎) |
 | `strategy` | — | JSON 字符串,临时策略 |
-| `strategy_name` | — | 一次性命名预设:`local`/`vl`/`fallback`/`quality`(见 §7) |
+| `strategy_name` | — | 一次性命名预设:`local`/`vl`/`seq*`/`bestof*`(见 §7) |
 | `max_pages` | — | PDF 页数上限 |
 | `dpi` | 200 | PDF 渲染 DPI |
 | `format` | `json` | `json` / `text` / `markdown` |
@@ -295,20 +301,39 @@ curl -s -X DELETE http://localhost:8000/config
 
 ### 7.1 命名策略预设(strategy presets)
 
-项目把常用引擎组合固化成四个**命名预设**,配置里固定默认策略,单次请求可临时切换
+项目把常用引擎组合固化为**命名预设**,配置里固定默认策略,单次请求可临时切换
 (一次性,不改动服务端 base config):
 
-| 预设 | 引擎范围 | retry_mode | 阅读顺序重排 | 适用场景 |
-|------|----------|------------|:----:|----------|
-| `local` | 仅本地引擎(rapidocr 家族) | `no_text` | — | 离线、隐私敏感、批量低成本 |
-| `vl` | 仅远程 VL 大模型(siliconflow/multimodal) | `no_text` | — | 版面复杂、手写、表格、**需要整理后的连贯文本** |
-| `fallback` | 全部启用引擎,按配置顺序回退(**默认**) | `no_text` | — | 通用生产链路 |
-| `quality` | 同 fallback + 窜行降级 + 阅读顺序重排 | `any` | ✅ | 盖章/倾斜导致 rapidocr 窜行,或本地优先但需要回退整理 |
+**顺序预设**(`seq*`,走 `StrategyEngine`,按引擎顺序尝试,首个命中即返回):
 
-`quality` 的完整逻辑:先用 `any` 模式判定 rapidocr 结果是否低置信度或**窜行**
-(`detect_line_overlap`:超长宽比合并框 + 双轴重叠框),不合格则降级到 VL 引擎;
-最终输出前按区域坐标做阅读顺序重排(`rebuild_text_from_regions`,
-`output.reorder_lines`)。
+| 预设 | retry_mode | 阅读顺序重排 | 适用场景 |
+|------|------------|:----:|----------|
+| `local` | `no_text` | — | 仅本地引擎,离线、隐私敏感 |
+| `vl` | `no_text` | — | 仅远程 VL 大模型,版面复杂/手写/表格 |
+| `seq` | `no_text` | — | 全部启用引擎,按配置顺序回退(**默认**) |
+| `seq-any` | `any`(低置信度或窜行) | ✅ | 同 quality,需要整理后的连贯文本 |
+| `seq-low_conf` | `low_confidence` | — | 低置信度时自动降级 |
+| `seq-line_overlap` | `line_overlap` | — | 窜行(合并/重叠框)时自动降级 |
+
+**最佳策略**(bestof*,走 `BestofEngine`,所有引擎各跑一次,按评分选最佳):
+
+| 预设 | 评分函数 | 适用场景 |
+|------|----------|----------|
+| `bestof` / `bestof-smart` | 置信度 × 100 − 窜行惩罚 + 文本长度奖赏 | 综合最优,推荐 |
+| `bestof-fastest` | 耗时(elapsed_ms)最低 | 追求速度 |
+| `bestof-confidence` | 平均置信度最高 | 追求质量 |
+| `bestof-longest` | 文本最长 | 追求完整性 |
+| `bestof:<mode>` | 同上任意 mode | 等价于 `bestof-mode` |
+
+> `bestof` 比 `seq*` 慢(所有引擎都跑),但能拿到所有候选里最好的结果——
+> 适合需要"不管用什么模型,只要识别质量最好"的场景。
+
+**legacy 别名**(保留兼容,与 seq* 完全等价):
+
+| 旧名 | 等价于 |
+|------|--------|
+| `fallback` | `seq` |
+| `quality` | `seq-any` |
 
 **用法**:
 
@@ -316,19 +341,24 @@ curl -s -X DELETE http://localhost:8000/config
 # CLI
 python -m jykj_ocr scan.png --strategy-name quality
 
-# Python API
-jykj_ocr.ocr("scan.png", strategy_name="vl")
-```
+# 最佳策略:所有引擎各跑一次,选识别质量最优
+python -m jykj_ocr scan.png --strategy-name bestof    # seq-any,窜行自动降级
+python -m jykj_ocr scan.png --strategy-name bestof      # 所有引擎各跑一次,选最佳
+python -m jykj_ocr scan.png --strategy-name bestof-fastest
 
-```bash
+# Python API
+jykj_ocr.ocr("scan.png", strategy_name="seq-any")
+jykj_ocr.ocr("scan.png", strategy_name="bestof-smart")
+
 # HTTP —— /ocr(multipart)与 /ocr/text(JSON)均支持
-curl -s http://localhost:8000/ocr -F "file=@scan.png" -F "strategy_name=quality"
-curl -s http://localhost:8000/ocr/text -H "Content-Type: application/json" \
-  -d '{"image_url":"https://example.com/scan.png","strategy_name":"vl"}'
+curl -s http://localhost:8000/ocr -F "file=@scan.png" -F "strategy_name=bestof"
+curl -s http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_url":"https://example.com/scan.png","strategy_name":"bestof-longest"}'
 ```
 
 未知名称:CLI 报 argparse 错并列出可选值;HTTP 返回 400
-`unknown strategy 'xxx'; choose one of local, vl, fallback, quality`。
+`unknown strategy 'xxx'; choose one of local, vl, seq, seq-any, seq-low_conf, seq-line_overlap, bestof, ...`。
 
 **优先级**:单次请求 `strategy_name` > `POST /config` 运行时覆盖 > `config.yaml`。
 预设展开走 `apply_strategy_preset`,返回 deepcopy——输入配置永不被改动。
@@ -337,7 +367,7 @@ curl -s http://localhost:8000/ocr/text -H "Content-Type: application/json" \
 
 本地/远程划分走 `remote_engines()`(内置 siliconflow、multimodal)。新注册引擎
 **无需改代码**即被预设识别:`local` 保留它(除非列入远程名单)、`vl` 排除它、
-`fallback`/`quality` 尊重其 `enabled` 标志。要把新厂商归入远程侧:
+`seq*`/`bestof*`/`fallback`/`quality` 尊重其 `enabled` 标志。要把新厂商归入远程侧:
 
 ```bash
 export JYKJ_OCR_REMOTE_ENGINES="paddlecloud,acme-vl"   # 逗号分隔,小写
@@ -391,9 +421,9 @@ docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
 .venv/Scripts/python -m pytest tests -q
 ```
 
-- **CI 基线**:98 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
+- **CI 基线**:120 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
 - 覆盖:models、config、strategy、engines(multimodal OpenAI 响应解析、rapidocr
-  1.x/1.4.x/2.x 返回形态)、策略预设(local/vl/fallback/quality、deepcopy 不变性、
+  1.x/1.4.x/2.x 返回形态)、策略预设(local/vl/seq*/bestof*、deepcopy 不变性、
   `JYKJ_OCR_REMOTE_ENGINES` 扩展)、窜行检测与阅读顺序重排、inputs 魔数识别
 
 端到端接口测试(需联网 + key,非 CI):

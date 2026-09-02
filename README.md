@@ -30,17 +30,32 @@ CLI、Python API 与 FastAPI HTTP 接口。
 ## 策略预设
 
 配置文件固定**默认策略**,API/CLI 可按请求**一次性切换**预设(不改动任何配置,
-只在本次请求生效)。四个预设:
+只在本次请求生效)。
 
-| 预设 | 引擎链 | 重试判定 | 文本重排 |
-|------|--------|---------|:--------:|
-| `local` | 只用本地引擎(rapidocr 等),远程全部禁用 | `no_text` | ❌ |
-| `vl` | 只用 VL 大模型(siliconflow/multimodal),本地禁用 | 沿用配置 | ❌ |
-| `fallback` | 按 config 顺序回退所有启用的引擎(默认) | `no_text` | ❌ |
-| `quality` | 同 fallback | `any`(低置信度**或**窜行即降级换引擎) | ✅ 按坐标重建阅读顺序 |
+**顺序预设**(`seq*`,按引擎顺序尝试,首个命中即返回):
 
-`quality` 针对 RapidOCR 等检测框合并/重叠导致的**文字窜行**:检测到异常版面
-(超长宽比 + 双轴重叠)时自动换下一引擎,否则按区域坐标聚类重建行序输出。
+| 预设 | 引擎范围 | retry_mode | 文本重排 |
+|------|----------|------------|:--------:|
+| `local` | 仅本地(rapidocr 等),远程禁用 | `no_text` | ❌ |
+| `vl` | 仅 VL 大模型(siliconflow/multimodal),本地禁用 | `no_text` | ❌ |
+| `seq` | 全部启用引擎,按配置顺序回退(默认) | `no_text` | ❌ |
+| `seq-any` | 同 seq,但低置信度或窜行即降级 | `any` | ✅ 按坐标重建阅读顺序 |
+| `seq-low_conf` | 低置信度时自动降级 | `low_confidence` | ❌ |
+| `seq-line_overlap` | 窜行时自动降级 | `line_overlap` | ❌ |
+
+**最佳策略**(`bestof*`,所有引擎各跑一次,按评分选最佳):
+
+| 预设 | 评分函数 |
+|------|----------|
+| `bestof` / `bestof-smart` | 置信度 − 窜行惩罚 + 文本长度奖赏(综合最优) |
+| `bestof-fastest` | 耗时最低 |
+| `bestof-confidence` | 平均置信度最高 |
+| `bestof-longest` | 文本最长 |
+| `bestof:<mode>` | 等价于 `bestof-mode` |
+
+`bestof` 比 `seq*` 慢(所有引擎都跑),但能拿到所有候选里最好的结果。
+
+**legacy 别名**:`fallback` == `seq` / `quality` == `seq-any`(保留兼容)。
 
 `retry_mode` 可选值:`no_text` / `low_confidence` / `line_overlap` / `any` / `none`;
 `output.reorder_lines: true` 可单独开启阅读顺序重排。
@@ -50,18 +65,20 @@ Tesseract、其他云厂商…)无需改预设代码——注册后默认归入�
 远程端点,设 `JYKJ_OCR_REMOTE_ENGINES="a,b"` 把它标为远程即可被 `vl` 选中。
 
 ```bash
-# CLI:本次运行切换到 quality 预设
-python -m jykj_ocr image.png --strategy-name quality
+# CLI
+python -m jykj_ocr image.png --strategy-name quality        # seq-any,窜行降级
+python -m jykj_ocr image.png --strategy-name bestof         # 所有引擎各跑一次
+python -m jykj_ocr image.png --strategy-name bestof-fastest
 
-# HTTP:/ocr form 字段 strategy_name(与 engine/model/prompt 同级,最后应用)
-curl -s http://localhost:8000/ocr -F "file=@image.png" -F "strategy_name=vl"
+# HTTP
+curl -s http://localhost:8000/ocr -F "file=@image.png" -F "strategy_name=bestof"
 
-# HTTP JSON:/ocr/text body
+# HTTP JSON
 curl -s http://localhost:8000/ocr/text -H "Content-Type: application/json" \
-  -d '{"image_url":"https://example.com/scan.png","strategy_name":"quality"}'
+  -d '{"image_url":"https://example.com/scan.png","strategy_name":"bestof-longest"}'
 
 # Python API
-results = jykj_ocr.ocr("image.png", strategy_name="local")
+results = jykj_ocr.ocr("image.png", strategy_name="bestof-smart")
 ```
 
 优先级:**单次请求的 `strategy_name` > `POST /config` 运行时覆盖 > config.yaml**。
@@ -154,7 +171,7 @@ python -m jykj_ocr serve --port 8000
 | `source` | 图片/PDF 路径或 `http(s)://` URL |
 | `-c` / `--config` | 配置文件路径(默认 `config/config.yaml`) |
 | `--engine` | 强制使用某引擎,忽略策略链 |
-| `--strategy-name` | 一次性策略预设:`local` \| `vl` \| `fallback` \| `quality` |
+| `--strategy-name` | 一次性策略预设:`local` \| `vl` \| `seq*` \| `bestof*` |
 | `--format` | `text` \| `markdown` \| `json`(默认 `text`) |
 | `-o` / `--output` | 输出文件;缺省打印到 stdout |
 | `--max-pages` | PDF 最多处理页数 |
@@ -179,7 +196,7 @@ text = jykj_ocr.ocr_to_text("image.png", engine="rapidocr")
 
 `ocr(source, *, engine=None, config=None, config_path=None, max_pages=None, dpi=200, retries=1, strategy_name=None)`
 → `List[OCRResult]`,每页一个。`source` 必须是文件路径或 `http(s)://` URL
-(不接受裸 bytes)。`strategy_name` 一次性应用命名预设(`local`/`vl`/`fallback`/`quality`),
+(不接受裸 bytes)。`strategy_name` 一次性应用命名预设(`local`/`vl`/`seq*`/`bestof*`),
 只作用于本次调用的配置副本。
 
 ## HTTP API
@@ -208,7 +225,7 @@ curl -s http://localhost:8000/ocr \
 ```
 
 form 字段:`file`(必填)、`engine`、`model`、`prompt`、`strategy`(JSON 字符串)、
-`strategy_name`(`local`/`vl`/`fallback`/`quality`,一次性预设)、
+`strategy_name`(`local`/`vl`/`seq*`/`bestof*`,一次性预设,见策略预设章节)、
 `max_pages`、`dpi`、`format`(`json`/`text`/`markdown`)。`model`/`prompt` 仅对远程引擎
 (`siliconflow`/`multimodal`,或 `JYKJ_OCR_REMOTE_ENGINES` 标定的引擎)生效,
 本地 `rapidocr` 不受影响。
@@ -256,7 +273,7 @@ docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
 .venv/Scripts/python -m pytest tests -q     # 全部离线,无真实 API 调用
 ```
 
-50 个用例覆盖:models(边界框/文本区域/置信度保留)、config(别名归一化/YAML/环境变量
+120 个用例覆盖:models(边界框/文本区域/置信度保留)、config(别名归一化/YAML/环境变量
 优先级)、strategy(重试链/谓词)、engines(multimodal 的 OpenAI 响应解析 / rapidocr 的
 1.x 3-tuple 与 1.4.x 2-tuple 返回形态)。
 
@@ -274,19 +291,19 @@ src/jykj_ocr/
 ├── __init__.py            # 顶层 API:ocr() / ocr_to_text()
 ├── config.py              # Config / EngineConfig / load_config / normalise_engine
 ├── models.py              # Point / BoundingBox / TextRegion / OCRResult
-├── strategy.py            # StrategyEngine / 重试谓词(no_text/low_confidence/line_overlap)
+├── strategy.py            # StrategyEngine / BestofEngine / 重试谓词
 ├── engine/
 │   ├── __init__.py        # 惰性注册(lazy import,不引入 PIL/rapidocr/openai)
 │   ├── base.py            # BaseEngine / PageImage / EngineNotAvailable / registry
 │   ├── inputs.py          # 图片/PDF/URL → PageImage
-│   └── registry.py        # build_engine / build_pipeline / apply_strategy_preset / remote_engines
+│   └── registry.py        # build_engine / build_pipeline / apply_strategy_preset / remote_engines / _SEQ_PRESETS
 ├── engines/
 │   ├── rapidocr_engine.py     # RapidOCREngine(适配 1.x/1.4.x/2.x 返回形态)
 │   └── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容;同时注册 siliconflow 别名工厂)
 ├── cli.py               # argparse CLI
 └── server.py            # FastAPI /ocr /ocr/text /config /engines /health
 config/config.yaml       # 默认引擎 + 策略
-tests/                   # pytest,50 passed
+tests/                   # pytest,120 passed
 scripts/                 # 诊断与接口测试脚本
 Dockerfile / docker-compose.yml
 requirements.txt / pyproject.toml
@@ -296,10 +313,10 @@ requirements.txt / pyproject.toml
 ## 架构要点
 
 - **惰性注册**:`import jykj_ocr` 不加载 PIL/rapidocr/openai,引擎按需 import。
-- **策略引擎**:按顺序尝试每个引擎,`should_retry_no_text` /
-  `should_retry_low_confidence` / `should_retry_line_overlap`(窜行检测)判定是否
-  重试与切换;`combine_predicates` 支持 `any` 组合模式。
-- **命名预设**:`apply_strategy_preset` 把 `local`/`vl`/`fallback`/`quality` 展开为
+- **策略引擎**:`StrategyEngine` 按顺序尝试(首个命中即返回),`should_retry_no_text` /
+  `should_retry_low_confidence` / `should_retry_line_overlap` 判定是否重试与切换;
+  `BestofEngine` 所有引擎各跑一次,按 smart/fastest/highest_confidence/longest 评分选最佳。
+- **命名预设**:`apply_strategy_preset` 把 `local`/`vl`/`seq*`/`bestof*`(含 legacy `fallback`/`quality` 别名)展开为
   一次性配置副本(deepcopy,输入 config 永不被改动);远程/本地划分走
   `remote_engines()` 白名单,新引擎零改动接入。
 - **`TextRegion.from_parts`**:用 `_UNSET` 哨兵区分"调用方没传 confidence"与
