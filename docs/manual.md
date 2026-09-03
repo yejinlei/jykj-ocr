@@ -1021,100 +1021,275 @@ flowchart LR
 
 ## 9. 策略预设
 
-### 9.1 命名策略预设(strategy presets)
+### 9.1 两种策略模型总览
 
-项目把常用引擎组合固化为**命名预设**,配置里固定默认策略,单次请求可临时切换
-(一次性,不改动服务端 base config):
+jykj_ocr 提供**两类**策略,解决不同场景:
 
-**顺序预设**(`seq*`,走 `StrategyEngine`,按引擎顺序尝试,首个命中即返回):
+| 策略家族 | 引擎调用方式 | 何时选它 |
+|----------|--------------|----------|
+| **顺序预设**(`local`/`vl`/`seq*`/`fallback`/`quality`) | 按 `config.engines` 顺序一个接一个尝试,**第一个命中即返回**;不通过再试下一个 | 日常生产:引擎 A 能用就用 A,失败才降级到 B——快,省钱 |
+| **最佳预设**(`bestof`/`bestof-*`) | **所有引擎各跑一次**,按评分函数挑得分最高的那一个 | 对质量要求极高:不在乎多花几倍时间,只要结果最好 |
 
-| 预设 | retry_mode | 阅读顺序重排 | 适用场景 |
-|------|------------|:----:|----------|
-| `local` | `no_text` | — | 仅本地引擎,离线、隐私敏感 |
-| `vl` | `no_text` | — | 仅远程 VL 大模型,版面复杂/手写/表格 |
-| `seq` | `no_text` | — | 全部启用引擎,按配置顺序回退(**默认**) |
-| `seq-any` | `any`(低置信度或窜行) | ✅ | 同 quality,需要整理后的连贯文本 |
-| `seq-low_conf` | `low_confidence` | — | 低置信度时自动降级 |
-| `seq-line_overlap` | `line_overlap` | — | 窜行(合并/重叠框)时自动降级 |
+```mermaid
+flowchart LR
+    A["jykj_ocr.ocr(source, ...)"] --> S{"strategy_name"}
 
-**最佳策略**(bestof*,走 `BestofEngine`,所有引擎各跑一次,按评分选最佳):
+    S -->|local / vl / seq / seq-*<br/>fallback / quality| SEQ["策略引擎 StrategyEngine<br/>按序尝试 + 重试"]
+    S -->|bestof / bestof-*<br/>bestof:&lt;mode&gt;| BEST["择优引擎 BestofEngine<br/>所有引擎各跑一次"]
 
-| 预设 | 评分函数 | 适用场景 |
-|------|----------|----------|
-| `bestof` / `bestof-smart` | 置信度 × 100 − 窜行惩罚 + 文本长度奖赏 + **语义流畅度** | 综合最优,**推荐** |
-| `bestof-fastest` | 耗时(elapsed_ms)最低 | 追求速度 |
-| `bestof-confidence` | 平均置信度最高 | 追求质量 |
-| `bestof-longest` | 文本最长 | 追求完整性 |
-| `bestof-fluency` | 语义流畅度(短语密度 + CJK 标点 − 单字碎片惩罚) | 追求"读起来像人话" |
-| `bestof:<mode>` | 同上任意 mode | 等价于 `bestof-mode`,冒号语法别名 |
+    SEQ -->|1 个命中| RESULT["返回结果"]
+    BEST -->|N 个候选 → 评分 → 取最高| RESULT
 
-**bestof-fluency 评分信号**:
-
-- **短语密度**(上限 +15):每区域平均字符数,句子越长越连贯
-- **CJK 标点比例**(上限 +5):句子标记占比——有标点即像自然语言
-- **单字碎片惩罚**(上限 −25):166 个单字的 rapidocr 输出会被明显扣减
-
-> 对兰亭序实测,rapidocr 输出 166 个单字/短词(fluency ≈ −23),
-> siliconflow 输出完整古文句子(fluency ≈ +15),`bestof-fluency`/`bestof-smart` 均正确选硅基流动。
-
-**legacy 别名**:
-
-| 旧名 | 等价于 |
-|------|--------|
-| `fallback` | `seq` |
-| `quality` | `seq-any` |
-
-**用法**:
-
-```bash
-# CLI
-python -m jykj_ocr scan.png --strategy-name quality
-
-# Python API
-jykj_ocr.ocr("scan.png", strategy_name="seq-any")
-jykj_ocr.ocr("scan.png", strategy_name="bestof-smart")
-
-# HTTP
-curl -s http://localhost:8000/ocr -F "file=@scan.png" -F "strategy_name=bestof"
-curl -s http://localhost:8000/ocr/text \
-  -H "Content-Type: application/json" \
-  -d '{"image_url":"https://example.com/scan.png","strategy_name":"bestof-longest"}'
+    classDef seq fill:#e8f1ff,stroke:#1565c0
+    classDef best fill:#f3e5f5,stroke:#6a1b9a
+    class SEQ seq
+    class BEST best
 ```
 
-未知名称:CLI 报 argparse 错并列出可选值;HTTP 返回 400
-`unknown strategy 'xxx'; choose one of local, vl, seq, seq-any, ...`。
+### 9.2 顺序预设(`seq*`,走 `StrategyEngine`)
 
-**优先级**:单次请求 `strategy_name` > `POST /config` 运行时覆盖 > `config.yaml`。
+**工作机制**:引擎按 `config.engines` 数组顺序排列,从第一个开始 `recognise()`;
+结果通过 `retry_check` 谓词(见 §9.4)判定是否合格——合格即返回,不合格才切换下一个。
+每个引擎最多重试 `max_retries` 次。
 
-### 9.2 更多 OCR 引擎接入
+```mermaid
+flowchart TD
+    START["调用 ocr(..., strategy_name='seq')"]
+    START --> INIT["按 engines 数组顺序取下一个"]
+
+    INIT --> E1["引擎 1: rapidocr<br/>recognise()"]
+    E1 --> C1{"retry_check<br/>no_text? ok? 通过?"}
+    C1 -->|通过| RETURN["✅ 返回结果"]
+
+    C1 -->|未通过| E2["引擎 2: siliconflow<br/>recognise()"]
+    E2 --> C2{"retry_check<br/>通过?"}
+    C2 -->|通过| RETURN
+    C2 -->|未通过| E3["引擎 3: multimodal<br/>recognise()"]
+    E3 --> C3{"retry_check<br/>通过?"}
+    C3 -->|通过| RETURN
+    C3 -->|未通过| ERR["❌ StrategyError<br/>链耗尽"]
+
+    classDef engine fill:#f3e5f5,stroke:#6a1b9a
+    classDef pass fill:#e8f5e9,stroke:#2e7d32
+    classDef fail fill:#ffebee,stroke:#c62828
+    class E1,E2,E3 engine
+    class RETURN pass
+    class ERR fail
+```
+
+**各预设细节**:
+
+| 预设 | 引擎范围 | retry_mode | 阅读顺序重排 | 适用场景 |
+|------|----------|:----:|:---:|----------|
+| `local` | 仅本地(rapidocr 家族) | `no_text` | — | 离线、隐私敏感、批量低成本 |
+| `vl` | 仅远程 VL 大模型 | `no_text` | — | 版面复杂、手写、表格 |
+| `seq` | 全部启用引擎 | `no_text` | — | 通用生产链路(**默认**) |
+| `seq-any` | 同 seq + 窜行降级 | `any`(低置信度或窜行任一) | ✅ | 盖章/倾斜导致 rapidocr 窜行 |
+| `seq-low_conf` | 全部启用引擎 | `low_confidence` | — | 低置信度自动降级 |
+| `seq-line_overlap` | 全部启用引擎 | `line_overlap` | — | 窜行时自动降级 |
+| `fallback` | 同 seq | — | — | legacy 别名 |
+| `quality` | 同 seq-any | — | — | legacy 别名 |
+
+**示例**:
+
+```python
+# 通用生产:rapidocr 优先,失败才降级
+results = jykj_ocr.ocr("scan.png")              # 默认 seq
+
+# 仅本地引擎(离线场景)
+results = jykj_ocr.ocr("scan.png", strategy_name="local")
+
+# 窜行自动降级 + 阅读顺序重排
+results = jykj_ocr.ocr("stamp.png", strategy_name="quality")
+
+# HTTP 端点
+curl -s http://localhost:8000/ocr/quality \
+  -F "file=@scan.png" -F "format=json"
+curl -s http://localhost:8000/ocr/vl \
+  -F "file=@scan.png" -F "format=json"
+```
+
+**阅读顺序重排**(仅 `seq-any`/`quality` 开启):当检测到窜行时,`rebuild_text_from_regions()`
+按 bbox 的 `y1` 升序、同行内按 `x1` 升序重排所有 `TextRegion`,让输出"读起来像人话"。
+
+### 9.3 最佳预设(`bestof*`,走 `BestofEngine`)
+
+**工作机制**:所有已启用引擎**各跑一次**,拿到 N 个候选结果后,按评分函数打分,
+**返回得分最高的那一个**。
+
+```mermaid
+flowchart TD
+    START["调用 ocr(..., strategy_name='bestof')"]
+
+    START --> BRANCH["所有引擎并发运行"]
+
+    BRANCH --> E1["引擎 1: rapidocr<br/>recognise() → R1"]
+    BRANCH --> E2["引擎 2: siliconflow<br/>recognise() → R2"]
+    BRANCH --> E3["引擎 3: multimodal<br/>recognise() → R3"]
+
+    E1 --> SCORE["评分函数 score(R)"]
+    E2 --> SCORE
+    E3 --> SCORE
+
+    SCORE --> S1["R1: smart = 78"]
+    SCORE --> S2["R2: smart = 92 ★"]
+    SCORE --> S3["R3: smart = 85"]
+
+    S1 --> PICK["取最高分"]
+    S2 --> PICK
+    S3 --> PICK
+
+    PICK --> RETURN["✅ 返回 R2(siliconflow)"]
+
+    classDef engine fill:#f3e5f5,stroke:#6a1b9a
+    classDef score fill:#fff9c4,stroke:#f57f17
+    classDef best fill:#e8f5e9,stroke:#2e7d32
+    class E1,E2,E3 engine
+    class S1,S2,S3 score
+    class RETURN best
+```
+
+**各评分模式详解**:
+
+| 预设 | 评分函数 | 得分公式 | 适用场景 |
+|------|----------|----------|----------|
+| `bestof` / `bestof-smart` | **综合最优**(**推荐**) | `置信度 × 100 − 窜行惩罚 20 + 文本长度上限 1 + 语义流畅度` | 通用质量最优,自动规避碎片化输出 |
+| `bestof-fastest` | 最快 | `−elapsed_ms`(数值越小越好) | 追求速度 |
+| `bestof-confidence` | 置信度最高 | `mean(confidence)` | 追求每字准确 |
+| `bestof-longest` | 文本最长 | `len(text)` | 追求完整性,不漏字 |
+| `bestof-fluency` | 语义流畅度 | `短语密度 + CJK 标点 − 单字碎片惩罚` | 追求"读起来像人话" |
+| `bestof:<mode>` | 同上任意 mode | 等价于 `bestof-mode` | 冒号语法别名 |
+
+**智能评分 `smart` 打分拆解**:
+
+```mermaid
+flowchart TD
+    SCORE["OCRResult"]
+
+    SCORE --> CONF["置信度分<br/>mean(confidence) × 100<br/>上限 100"]
+    SCORE --> GARBLED{"检测到窜行?"}
+    GARBLED -->|是| PENALTY["窜行惩罚 −20"]
+    GARBLED -->|否| NONE["0"]
+    SCORE --> LEN["文本长度<br/>min(1, len(text))<br/>上限 +1"]
+    SCORE --> FLUENCY["语义流畅度<br/>短语密度 + CJK 标点<br/>− 单字碎片惩罚"]
+
+    CONF --> SUM["总分 = 以上四项求和"]
+    PENALTY --> SUM
+    NONE --> SUM
+    LEN --> SUM
+    FLUENCY --> SUM
+
+    SUM --> PICK["得分最高的引擎 = 赢家"]
+
+    classDef pos fill:#e8f5e9,stroke:#2e7d32
+    classDef neg fill:#ffebee,stroke:#c62828
+    classDef neut fill:#fff9c4,stroke:#f57f17
+    class CONF,LEN,FLUENCY pos
+    class PENALTY neg
+    class NONE neut
+    class PICK pos
+```
+
+**语义流畅度(`_fluency_score`)打分信号**:
+
+| 信号 | 分值范围 | 判定逻辑 |
+|------|:----:|----------|
+| 短语密度 | `0 ~ +15` | 每个区域平均字符数;句子越长越连贯 |
+| CJK 标点比例 | `0 ~ +5` | `,。！？、；:()`等占比——有标点即像自然语言 |
+| 单字碎片惩罚 | `0 ~ −25` | `len(text)==1` 的区域数 × 0.3——单字越多扣越多 |
+
+> **对兰亭序实测**:rapidocr 输出 166 个单字/短词(fluency ≈ **−23**),
+> siliconflow 输出完整古文句子(fluency ≈ **+15**)——`bestof-smart`/`bestof-fluency`
+> 都能正确选中硅基流动。
+
+**示例**:
+
+```python
+# 综合最优(推荐)
+results = jykj_ocr.ocr("scan.png", strategy_name="bestof")
+
+# 所有引擎各跑一次,按最快耗时选
+results = jykj_ocr.ocr("scan.png", strategy_name="bestof-fastest")
+
+# 冒号语法:等价于 bestof-fluency
+results = jykj_ocr.ocr("scan.png", strategy_name="bestof:fluency")
+
+# HTTP
+curl -s http://localhost:8000/ocr/bestof \
+  -F "file=@scan.png" -F "format=json"
+curl -s http://localhost:8000/ocr/bestof-confidence/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_url":"https://example.com/img.png","format":"text"}'
+```
+
+**`bestof` vs `seq*` 取舍**:
+
+- `bestof` 比 `seq*` 慢(所有引擎都跑),但能拿到所有候选里最好的结果
+- `seq*` 快(首个命中即返回),适合"引擎 A 大多数时候够用,偶尔才降级"的场景
+
+### 9.4 底层重试模式(retry_mode)
+
+所有 `seq*` 预设最终都落到 `retry_mode`。策略引擎按 `config.engines` 顺序尝试,
+每个引擎最多重试 `max_retries` 次,由下列谓词决定是否换引擎:
+
+```mermaid
+flowchart TD
+    START["retry_check(result)"]
+
+    START --> NO_TEXT{"文本为空?"}
+    NO_TEXT -->|是| RETRY["重试/切换下一个引擎"]
+
+    START --> LOW_CONF{"avg(confidence) < min_confidence?"}
+    LOW_CONF -->|是| RETRY
+
+    START --> OVERLAP{"检测到窜行?"}
+    OVERLAP -->|是| RETRY
+
+    NO_TEXT -->|否| PASS{"其他谓词"}
+    LOW_CONF -->|否| PASS
+    OVERLAP -->|否| PASS
+    PASS --> OK["✅ 合格,返回结果"]
+
+    RETRY --> NEXT["尝试下一个引擎"]
+    NEXT --> END{"引擎用尽?"}
+    END -->|否| START
+    END -->|是| FALLBACK
+
+    FALLBACK --> HAS_TEXT{"有 ok 的历史结果?"}
+    HAS_TEXT -->|是| RETURN_LONG["返回文本最长的历史结果"]
+    HAS_TEXT -->|否| ERR["❌ StrategyError"]
+
+    classDef ok fill:#e8f5e9,stroke:#2e7d32
+    classDef fail fill:#ffebee,stroke:#c62828
+    classDef neut fill:#e3f2fd,stroke:#1565c0
+    class OK,RETURN_LONG ok
+    class ERR fail
+    class RETRY,START,NO_TEXT,LOW_CONF,OVERLAP,END,HAS_TEXT neut
+```
+
+| `retry_mode` | 行为 |
+|--------------|------|
+| `no_text` | 结果无文本 → 重试/切换(**默认**) |
+| `low_confidence` | 平均置信度 < `min_confidence` → 重试/切换 |
+| `line_overlap` | 无文本**或**检测到窜行 → 重试/切换 |
+| `any` | 低置信度**或**窜行任一命中 → 重试/切换(`combine_predicates` 组合) |
+| `none` / `first_success` | 第一个成功结果即返回,不重试 |
+
+**链耗尽兜底**:若所有引擎都失败或无文本,但某个引擎曾产出 `ok` 结果——返回其中**文本最长**的那个;若完全没有任何 `ok` 结果,抛 `StrategyError`(HTTP 422)。手动调参示例:
+
+```bash
+curl -s -X POST http://localhost:8000/config \
+  -H "Content-Type: application/json" \
+  -d '{"strategy":{"retry_mode":"any","min_confidence":0.75,"max_retries":2}}'
+```
+
+### 9.5 更多 OCR 引擎接入
 
 本地/远程划分走 `remote_engines()`(内置 siliconflow、multimodal)。新注册引擎
 **无需改代码**即被预设识别。要把新厂商归入远程侧:
 
 ```bash
 export JYKJ_OCR_REMOTE_ENGINES="paddlecloud,acme-vl"   # 逗号分隔,小写
-```
-
-### 9.3 底层重试模式(retry_mode)
-
-预设最终都落到 `retry_mode`。策略引擎按 `config.engines` 顺序尝试,每个引擎最多
-重试 `max_retries` 次,由下列谓词决定是否换引擎:
-
-| `retry_mode` | 行为 |
-|--------------|------|
-| `no_text` | 结果无文本 → 重试/切换(默认) |
-| `low_confidence` | 平均置信度 < `min_confidence` → 重试/切换 |
-| `line_overlap` | 无文本**或**检测到窜行 → 重试/切换 |
-| `any` | 低置信度**或**窜行任一命中 → 重试/切换 |
-| `none` / `first_success` | 第一个成功结果即返回,不重试 |
-
-链耗尽时:返回所有尝试中 `ok` 且文本最长的结果(best-of 兜底);若无任何 `ok`
-结果,抛 `StrategyError`(HTTP 422)。手动调参示例:
-
-```bash
-curl -s -X POST http://localhost:8000/config \
-  -H "Content-Type: application/json" \
-  -d '{"strategy":{"retry_mode":"any","min_confidence":0.75,"max_retries":2}}'
 ```
 
 ---
