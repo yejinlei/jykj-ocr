@@ -334,13 +334,19 @@ curl -s http://localhost:8000/ocr \
 ```mermaid
 sequenceDiagram
     autonumber
-    alt Python SDK
-        participant U as 用户代码
+    participant C as 客户端(curl)
+    participant U as 用户代码
+    participant S as FastAPI server
+    participant A as jykj_ocr.ocr()
+    participant INPUT as inputs.load()
+    participant REG as build_pipeline()
+    participant ENGINE as 引擎层
+
+    alt Python SDK 路径
         U->>+A: ocr("scan.png", engine="rapidocr")
-    else RESTful API
-        participant C as 客户端(curl)
+    else RESTful API 路径
         C->>+S: POST /ocr multipart
-        S->>A: _recognise(body.image_url)
+        S->>+A: _recognise(body.image_url)
     end
 
     A->>INPUT: load(source) 解析输入
@@ -349,8 +355,12 @@ sequenceDiagram
     REG-->>A: StrategyEngine
     A->>ENGINE: recognise(page)
     ENGINE-->>A: OCRResult
-    A-->>U: List[OCRResult]
-    S-->>C: JSON 响应
+
+    alt Python SDK 返回
+        A-->>U: List[OCRResult]
+    else RESTful API 返回
+        S-->>C: JSON 响应
+    end
 ```
 
 ---
