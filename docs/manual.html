@@ -187,13 +187,23 @@ marked.setOptions({
 });
 
 var mermaidIdx = 0;
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+// Decode HTML entities back to raw chars (marked.parse escapes quotes in code blocks)
+function decHtml(s) {
+  var ta = document.createElement('textarea');
+  ta.innerHTML = s;
+  return ta.value;
+}
 function rewriteMermaid(html) {
   return html.replace(
     /<pre><code class="language-mermaid">(.*?)<\/code><\/pre>/gs,
     function(m, code) {
       var id = 'mermaid-' + (mermaidIdx++);
-      return '<div class="mermaid-wrap"><div class="mermaid" id="' + id + '" data-code=' +
-        JSON.stringify(code) + '></div></div>';
+      code = escHtml(decHtml(code)); // decode marked's HTML-entities, then re-escape for safe innerHTML
+      return '<div class="mermaid-wrap"><div class="mermaid" id="' + id + '">' +
+        code + '</div></div>';
     }
   );
 }
