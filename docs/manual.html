@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>jykj_ocr · 用户手册</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+<style>
+:root {
+  --bg: #0d1117;
+  --card: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --orange: #d29922;
+  --purple: #bc8cff;
+  --code-bg: #1c2128;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Microsoft YaHei", "SimHei", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  line-height: 1.7;
+  font-size: 16px;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.topbar {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(13,17,23,0.85); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 1.5rem;
+  display: flex; align-items: center; gap: 1rem;
+  font-size: 0.9rem;
+}
+.topbar .logo { font-weight: 700; color: var(--text); }
+.topbar .back { color: var(--muted); }
+
+.wrap {
+  max-width: 1100px; margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+  display: grid; grid-template-columns: 240px 1fr; gap: 2rem;
+}
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: 1fr; }
+  aside { display: none; }
+}
+
+aside {
+  position: sticky; top: 56px; align-self: start;
+  max-height: calc(100vh - 70px); overflow-y: auto;
+  font-size: 0.85rem; line-height: 1.5;
+}
+aside h4 { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; margin: 1rem 0 0.4rem; }
+aside ul { list-style: none; margin: 0.3rem 0; }
+aside li { padding: 0.18rem 0; }
+aside li a { color: var(--muted); border-left: 2px solid transparent; padding-left: 0.6rem; display: block; }
+aside li a:hover { color: var(--text); border-left-color: var(--accent); }
+aside li a .num { color: var(--orange); margin-right: 0.3rem; }
+
+main { min-width: 0; }
+main h1 { font-size: 2rem; margin: 1rem 0 0.5rem; background: linear-gradient(120deg, var(--accent), var(--purple)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+main h2 { font-size: 1.5rem; margin: 2.5rem 0 1rem; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+main h3 { font-size: 1.18rem; margin: 1.8rem 0 0.7rem; color: var(--text); }
+main h4 { font-size: 1rem; margin: 1.4rem 0 0.5rem; color: var(--orange); }
+main p { margin: 0.7rem 0; }
+main p.intro { color: var(--muted); font-size: 1.05rem; }
+main ul, main ol { margin: 0.5rem 0 0.5rem 1.5rem; }
+main li { margin: 0.25rem 0; }
+main blockquote {
+  border-left: 3px solid var(--accent);
+  background: var(--card);
+  padding: 0.6rem 1rem; margin: 1rem 0;
+  border-radius: 0 6px 6px 0;
+  color: var(--muted); font-size: 0.92rem;
+}
+main hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+
+main table {
+  border-collapse: collapse; width: 100%; margin: 1rem 0;
+  font-size: 0.9rem;
+}
+main th, main td {
+  border: 1px solid var(--border); padding: 0.55rem 0.7rem;
+  text-align: left; vertical-align: top;
+}
+main th { background: #21262d; color: var(--accent); font-weight: 600; }
+main tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+main pre {
+  background: var(--code-bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 1rem 1.2rem;
+  margin: 1rem 0; overflow-x: auto;
+  font-size: 0.85rem; line-height: 1.55;
+}
+main pre code {
+  font-family: Consolas, "Courier New", monospace;
+  color: var(--text); background: none; padding: 0;
+}
+main code {
+  background: #21262d; padding: 0.12rem 0.4rem; border-radius: 4px;
+  font-family: Consolas, monospace; font-size: 0.86em; color: var(--orange);
+}
+
+.mermaid-wrap {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 1rem 1.2rem;
+  margin: 1.2rem 0; overflow-x: auto;
+}
+.mermaid-wrap svg { max-width: 100%; height: auto; }
+
+#loading {
+  text-align: center; padding: 4rem 2rem;
+  color: var(--muted); font-size: 1.1rem;
+}
+#loading .spinner {
+  display: inline-block; width: 36px; height: 36px;
+  border: 3px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 1rem;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+footer { text-align: center; color: var(--muted); padding: 2.5rem 1rem; border-top: 1px solid var(--border); font-size: 0.88rem; }
+</style>
+</head>
+<body>
+
+<nav class="topbar">
+  <span class="logo">jykj_ocr</span>
+  <a class="back" href="index.html">← 回到首页</a>
+  <span style="color:var(--muted)">· 用户手册</span>
+</nav>
+
+<div class="wrap">
+  <aside>
+    <h4>第一篇 · 部署</h4>
+    <ul>
+      <li><a href="#_1"><span class="num">1</span>系统架构概览</a></li>
+      <li><a href="#_2"><span class="num">2</span>安装</a></li>
+      <li><a href="#_3"><span class="num">3</span>配置</a></li>
+      <li><a href="#_4"><span class="num">4</span>Docker 部署</a></li>
+      <li><a href="#_5"><span class="num">5</span>测试</a></li>
+    </ul>
+    <h4>第二篇 · 使用</h4>
+    <ul>
+      <li><a href="#_6"><span class="num">6</span>快速开始</a></li>
+      <li><a href="#_7"><span class="num">7</span>Python SDK</a></li>
+      <li><a href="#_8"><span class="num">8</span>RESTful API</a></li>
+      <li><a href="#_9"><span class="num">9</span>策略预设</a></li>
+      <li><a href="#_10"><span class="num">10</span>常见问题</a></li>
+    </ul>
+  </aside>
+
+  <main>
+    <div id="loading">
+      <div class="spinner"></div>
+      <div>正在加载用户手册…</div>
+    </div>
+    <div id="content"></div>
+  </main>
+</div>
+
+<footer>
+  jykj_ocr · MIT License ·
+  <a href="index.html">首页</a> ·
+  <a href="https://github.com/yejinlei/jykj-ocr/blob/master/docs/manual.md" target="_blank" rel="noopener">GitHub 源码</a>
+</footer>
+
+<script>
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+  highlight: function(code, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      return hljs.highlight(code, { language: lang }).value;
+    }
+    return hljs.highlightAuto(code).value;
+  }
+});
+
+var mermaidIdx = 0;
+function rewriteMermaid(html) {
+  return html.replace(
+    /<pre><code class="language-mermaid">(.*?)<\/code><\/pre>/gs,
+    function(m, code) {
+      var id = 'mermaid-' + (mermaidIdx++);
+      return '<div class="mermaid-wrap"><div class="mermaid" id="' + id + '" data-code=' +
+        JSON.stringify(code) + '></div></div>';
+    }
+  );
+}
+
+function addAnchors(html) {
+  return html.replace(/<h([1234])>(.*?)<\/h\1>/g, function(m, level, inner) {
+    var num = inner.replace(/[^\d.]/g, '').trim();
+    if (!num) return m;
+    var id = '_' + num.replace(/\./g, '_');
+    return '<h' + level + ' id="' + id + '">' + inner + '</h' + level + '>';
+  });
+}
+
+(async function main() {
+  try {
+    var resp = await fetch('manual.md');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var md = await resp.text();
+    var html = rewriteMermaid(marked.parse(md));
+    document.getElementById('content').innerHTML = addAnchors(html);
+    document.getElementById('loading').style.display = 'none';
+
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      securityLevel: 'loose',
+      fontFamily: 'Microsoft YaHei, SimHei, sans-serif',
+    });
+    await mermaid.run({ nodes: document.querySelectorAll('.mermaid') });
+  } catch (err) {
+    document.getElementById('loading').innerHTML =
+      '<div style="color:#f85149;text-align:center;padding:4rem;">' +
+      '<p style="font-size:1.5rem;margin-bottom:0.5rem;">⚠️</p>' +
+      '<p>加载手册失败: ' + err.message + '</p>' +
+      '<p style="margin-top:1rem;color:#8b949e;">' +
+      '<a href="https://github.com/yejinlei/jykj-ocr/blob/master/docs/manual.md" target="_blank">去 GitHub 查看</a>' +
+      '</p></div>';
+  }
+})();
+</script>
+</body>
+</html>
