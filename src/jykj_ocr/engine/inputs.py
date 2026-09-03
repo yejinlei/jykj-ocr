@@ -21,15 +21,14 @@ LOGGER = logging.getLogger(__name__)
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".webp"}
 _PDF_EXTENSIONS = {".pdf"}
 _URL_PREFIXES = ("http://", "https://")
+_DATA_PREFIX = "data:"
 
 
 def load(source: str, *, max_pages: Optional[int] = None, dpi: int = 200) -> List[PageImage]:
     """Load ``source`` into pages.
 
-    Args:
-        source: File path or ``http(s)://`` URL.
-        max_pages: Cap on pages to render (``None`` = unlimited).
-        dpi: Rasterisation density for PDF pages.
+    ``source`` can be a local file path, an ``http(s)://`` URL, or a
+    ``data:`` URI (e.g. ``data:image/png;base64,...``).
     """
     if not source or not str(source).strip():
         raise InputError("empty input path")
@@ -37,6 +36,8 @@ def load(source: str, *, max_pages: Optional[int] = None, dpi: int = 200) -> Lis
 
     if source.lower().startswith(_URL_PREFIXES):
         source = _download(source)
+    elif source.lower().startswith(_DATA_PREFIX):
+        source = _decode_data_uri(source)
 
     if not os.path.isfile(source):
         raise InputError(f"input not found: {source}")
@@ -79,6 +80,54 @@ def _magic_bytes(path: str) -> Optional[str]:
         if head.startswith(magic):
             return ext
     return None
+
+
+def _decode_data_uri(uri: str) -> str:
+    """Decode a ``data:`` URI into a temp file.
+
+    Accepts ``data:<type>[;base64],<payload>``. The extension is derived from
+    the ``<type>`` (e.g. ``image/png`` -> ``.png``); if it is unrecognised the
+    raw bytes are written to a ``.bin`` file so the caller can sniff by magic.
+    """
+    import base64
+
+    try:
+        header, payload = uri.split(",", 1)
+    except ValueError:
+        raise InputError("invalid data URI: missing payload") from None
+
+    parts = header.split(";")
+    media = parts[0].lower() if parts else ""  # e.g. "data:image/png"
+    if not media.startswith(_DATA_PREFIX):
+        raise InputError(f"invalid data URI header: {media!r}")
+
+    # Derive extension from the media type.
+    ext_map = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/gif": ".gif",
+        "image/bmp": ".bmp",
+        "image/webp": ".webp",
+        "image/tiff": ".tiff",
+        "application/pdf": ".pdf",
+    }
+    mime = media[len(_DATA_PREFIX):] if media.startswith(_DATA_PREFIX) else ""
+    suffix = ext_map.get(mime.lower()) or ".bin"
+
+    is_base64 = any(p.strip().lower() == "base64" for p in parts[1:])
+    try:
+        raw = base64.b64decode(payload) if is_base64 else payload.encode("utf-8")
+    except Exception as exc:
+        raise InputError(f"failed to decode data URI: {exc}") from exc
+
+    handle = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        handle.write(raw)
+        handle.close()
+        return handle.name
+    except Exception as exc:
+        raise InputError(f"failed to write data URI payload: {exc}") from exc
 
 
 def _download(url: str) -> str:
