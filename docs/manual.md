@@ -1239,7 +1239,7 @@ flowchart TD
     START --> NO_TEXT{"文本为空?"}
     NO_TEXT -->|是| RETRY["重试/切换下一个引擎"]
 
-    START --> LOW_CONF{"avg(confidence) < min_confidence?"}
+    START --> LOW_CONF{"avg(confidence)<br/>低于 min_confidence?"}
     LOW_CONF -->|是| RETRY
 
     START --> OVERLAP{"检测到窜行?"}
