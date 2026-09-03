@@ -1,15 +1,134 @@
 # jykj_ocr 用户手册
 
-本手册面向实际使用 jykj_ocr 的开发者与运维人员,涵盖安装、配置、三种调用方式
-(CLI / Python API / HTTP)、策略与重试、Docker 部署,以及常见问题排查。
+本手册面向实际使用 jykj_ocr 的开发者与运维人员,分为两篇:
+
+- **第一篇:部署篇** — 安装、配置、Docker、测试
+- **第二篇:使用篇** — Python SDK 与 RESTful API 调用,含完整输入/输出格式与案例
 
 ---
 
-## 1. 前置要求
+# 第一篇 · 部署篇
+
+## 1. 系统要求与架构概览
+
+### 1.1 前置要求
 
 - Python 3.10+
 - 本地 OCR 无需任何外部服务或 API key
 - 远程多模态 OCR 需要一个 OpenAI 兼容端点 + 对应 API key
+
+### 1.2 系统架构
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#e8f1ff", "fontFamily": "SimHei, Microsoft YaHei, sans-serif"}}}%%
+flowchart TB
+    subgraph CLIENT["调用方"]
+        CLI["CLI<br/>python -m jykj_ocr"]
+        PYAPI["Python API<br/>jykj_ocr.ocr()"]
+        HTTP["HTTP<br/>FastAPI /ocr /ocr/text"]
+    end
+
+    subgraph CONFIG["配置层 config.py"]
+        ENV["环境变量<br/>OPENAI_API_KEY / OPENAI_BASE_URL<br/>SILICONFLOW_API_KEY / JYKJ_OCR_*"]
+        YAML["config/config.yaml<br/>引擎顺序 + 策略"]
+        PREC["优先级<br/>显式参数 > 环境变量 > YAML > 默认"]
+        ENV --> PREC
+        YAML --> PREC
+    end
+
+    subgraph ORCH["策略层 strategy.py"]
+        STRAT["StrategyEngine<br/>按顺序尝试 + 重试"]
+        RETRY{"retry_check<br/>no_text / low_confidence<br/>line_overlap / any / none"}
+        TIMED["TimedOCR<br/>计时装饰"]
+        STRAT --> RETRY
+        RETRY -->|未通过| STRAT
+        RETRY -->|通过| TIMED
+    end
+
+    subgraph ENGINES["引擎层 engines/"]
+        RAPID["RapidOCREngine<br/>本地 ONNX,离线"]
+        MULTI["MultimodalEngine<br/>OpenAI 兼容 /chat/completions"]
+        SF["siliconflow<br/>注册别名,默认 PaddleOCR-VL-1.5"]
+    end
+
+    subgraph OUTPUT["输出 models.py"]
+        RESULT["OCRResult<br/>text + regions + engine<br/>+ model + elapsed_ms"]
+    end
+
+    subgraph SERVER["HTTP 服务 server.py"]
+        APP["FastAPI<br/>RuntimeConfig 线程安全<br/>POST /config 运行时覆盖"]
+    end
+
+    CLI --> PYAPI
+    CLI --> HTTP
+    HTTP --> APP
+    APP -->|strategy_name| ORCH
+    PYAPI --> ORCH
+    CLI -->|strategy_name| ORCH
+    PREC --> ORCH
+
+    ORCH --> RAPID
+    ORCH --> MULTI
+    ORCH --> SF
+
+    RAPID --> RESULT
+    MULTI --> RESULT
+    SF --> RESULT
+    RESULT --> APP
+    RESULT --> PYAPI
+    RESULT --> CLI
+
+    classDef client fill:#fff3e0,stroke:#e65100
+    classDef config fill:#e8f5e9,stroke:#2e7d32
+    classDef orch fill:#e3f2fd,stroke:#1565c0
+    classDef eng fill:#f3e5f5,stroke:#6a1b9a
+    classDef output fill:#fff9c4,stroke:#f57f17
+    classDef server fill:#e1f5fe,stroke:#0097a7
+
+    class CLI,PYAPI,HTTP client
+    class ENV,YAML,PREC config
+    class STRAT,RETRY,TIMED orch
+    class RAPID,MULTI,SF eng
+    class RESULT output
+    class APP server
+```
+
+### 1.3 数据流(以一次 HTTP 请求为例)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 客户端(curl/SDK)
+    participant S as server.py<br/>(FastAPI)
+    participant R as RuntimeConfig
+    participant P as build_pipeline()
+    participant E1 as rapidocr 引擎
+    participant E2 as siliconflow 引擎
+    participant M as models.py<br/>OCRResult
+
+    C->>S: POST /ocr (multipart file)
+    S->>R: snapshot() 获取当前配置
+    R-->>S: Config(含引擎顺序 + 策略)
+    S->>P: build_pipeline(config)
+    P-->>S: StrategyEngine
+
+    loop 按引擎顺序尝试
+        S->>E1: recognise(page)
+        alt E1 返回 ok 文本
+            E1-->>M: text + regions + bbox
+            M-->>S: OCRResult
+        else E1 失败或无文本
+            S->>E2: recognise(page)
+            E2-->>M: text + regions
+            M-->>S: OCRResult
+        end
+    end
+
+    S->>S: _ocr_response() 组装 JSON/text
+    S-->>C: {pages:[...], text, engine, page_count}
+```
+
+---
 
 ## 2. 安装
 
@@ -34,6 +153,8 @@ python -m jykj_ocr --list-engines
 # multimodal     通用 OpenAI 兼容端点
 ```
 
+---
+
 ## 3. 配置
 
 ### 3.1 环境变量(远程引擎)
@@ -54,7 +175,7 @@ cp .env.example .env
 | `SILICONFLOW_API_KEY` | 可选 | 仅当 siliconflow 需与 `OPENAI_*` 不同 key 时覆盖 |
 | `JYKJ_OCR_CONFIG` | 可选 | 配置文件路径(默认 `config/config.yaml`) |
 | `JYKJ_OCR_PORT` | 可选 | HTTP 服务端口(默认 8000) |
-| `JYKJ_OCR_REMOTE_ENGINES` | 可选 | 逗号分隔,把新引擎追加进远程名单(`vl` 侧),见 §7.2 |
+| `JYKJ_OCR_REMOTE_ENGINES` | 可选 | 逗号分隔,把新引擎追加进远程名单(`vl` 侧),见 §9.2 |
 
 切换平台示例(改两个变量即可,代码与配置文件不动):
 
@@ -97,91 +218,149 @@ engines:
 
 ### 3.3 配置优先级
 
-```
-显式参数 (--engine / ocr(engine=...))
-        ↓ 覆盖
-环境变量  JYKJ_OCR_* / *_API_KEY / OPENAI_API_KEY / OPENAI_BASE_URL
-        ↓ 覆盖
-config/config.yaml
-        ↓ 覆盖
-内置默认值
+```mermaid
+flowchart LR
+    A["内置默认值"] -->|被覆盖| B["config/config.yaml"]
+    B -->|被覆盖| C["环境变量<br/>JYKJ_OCR_*<br/>*_API_KEY<br/>OPENAI_*"]
+    C -->|被覆盖| D["显式参数<br/>--engine / ocr(engine=...)<br/>POST body / 表单字段"]
+    style D fill:#e8f5e9,stroke:#2e7d32,stroke-width:3px
+    style A fill:#ffebee,stroke:#c62828
 ```
 
-## 4. CLI 用法
+**口诀**:离用户最近的覆盖最远的。命令行参数 > 环境变量 > YAML 文件 > 代码默认值。
+
+---
+
+## 4. Docker 部署
 
 ```bash
-python -m jykj_ocr [source] [options]
+# 构建并启动(含 healthcheck + 模型权重持久化)
+docker compose up --build
+
+# 单容器
+docker build -t jykj_ocr .
+docker run --rm -p 8000:8000 --env-file .env jykj_ocr
+
+# 容器内一次性任务
+docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
+    python -m jykj_ocr /data/scan.png --engine siliconflow
 ```
 
-| 选项 | 默认 | 说明 |
-|------|------|------|
-| `source` | — | 图片/PDF 路径或 `http(s)://` URL |
-| `--engine` | 策略链 | 强制单个引擎 |
-| `--format` | `text` | `text` / `markdown` / `json` |
-| `-o` | stdout | 输出文件 |
-| `--max-pages` | 配置 | PDF 页数上限 |
-| `--dpi` | 200 | PDF 渲染 DPI |
-| `-c` | `config/config.yaml` | 配置文件 |
-| `--strategy-name` | 配置默认 | 一次性预设:`local`/`vl`/`seq*`/`bestof*`(见 §7) |
-| `serve` | — | 启动 HTTP 服务(`--host`/`--port`) |
-| `--list-engines` | — | 列出引擎后退出 |
+```mermaid
+flowchart TB
+    subgraph HOST["宿主机"]
+        ENV[".env<br/>API key 注入"]
+        VOLUME["rapidocr-models 卷<br/>模型权重持久化"]
+        PORT["端口 8000"]
+    end
 
-示例:
+    subgraph CONTAINER["容器 python:3.11-slim"]
+        APP["uvicorn jykj_ocr.server:app<br/>--host 0.0.0.0 --port 8000"]
+        HEALTH["HEALTHCHECK<br/>GET /health"]
+        RUNUSER["非 root 用户运行"]
+    end
+
+    ENV --> CONTAINER
+    VOLUME --> CONTAINER
+    PORT --> CONTAINER
+    APP --> HEALTH
+```
+
+- 基础镜像 `python:3.11-slim`,非 root 用户运行
+- `HEALTHCHECK` 探测 `/health`
+- 配置/端口:`JYKJ_OCR_CONFIG` / `JYKJ_OCR_PORT`
+- compose 持久化 RapidOCR 模型权重到 `rapidocr-models` 卷,避免重复下载
+
+---
+
+## 5. 测试
 
 ```bash
-# 离线识别
-python -m jykj_ocr scan.png --engine rapidocr --format markdown -o out.md
-
-# 远程识别
-python -m jykj_ocr scan.png --engine siliconflow --format json
-
-# PDF,只读前 5 页
-python -m jykj_ocr report.pdf --max-pages 5 --dpi 300
-
-# URL
-python -m jykj_ocr https://example.com/scan.png
-
-# 策略链(rapidocr 优先,失败回退 siliconflow)
-python -m jykj_ocr scan.png
-
-# 命名预设:本次强制走 VL 大模型
-python -m jykj_ocr scan.png --strategy-name vl
-
-# 命名预设:rapidocr 窜行自动降级 + 阅读顺序重排
-python -m jykj_ocr scan.png --strategy-name quality
-
-# 最佳策略:所有引擎各跑一次,选识别质量最优
-python -m jykj_ocr scan.png --strategy-name bestof
+.venv/Scripts/python -m pytest tests -q
 ```
 
-## 5. Python API
+- **CI 基线**:137 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
+- 覆盖:models、config、strategy、engines(multimodal OpenAI 响应解析、rapidocr
+  1.x/1.4.x/2.x 返回形态)、策略预设(local/vl/seq*/bestof*、deepcopy 不变性、
+  `JYKJ_OCR_REMOTE_ENGINES` 扩展)、窜行检测与阅读顺序重排、inputs 魔数识别
 
-> 完整可运行示例见 `scripts/demo.py`(`python scripts/demo.py [图片路径]`),
-> 四种场景一次跑通。
+端到端接口测试(需联网 + key,非 CI):
+
+```bash
+export OPENAI_API_KEY=...  OPENAI_BASE_URL=https://api.siliconflow.cn/v1
+.venv/Scripts/python scripts/test_interfaces.py
+```
+
+---
+
+# 第二篇 · 使用篇
+
+使用 jykj_ocr 有两种方式:
+
+- **Python SDK** — 直接在 Python 代码里调用,适合嵌入业务逻辑
+- **RESTful API** — 通过 HTTP 请求调用,适合跨语言、跨服务集成
+
+两种方式使用的**同一套引擎、同一套策略、同一套配置**,结果完全一致。
+
+---
+
+## 6. 快速开始
+
+### 6.1 三行代码识别一张图
+
+**Python SDK**:
 
 ```python
 import jykj_ocr
 
-# 指定引擎
-results = jykj_ocr.ocr("scan.png", engine="siliconflow")
-for r in results:
-    print(r.engine, r.model, len(r.regions), "regions")
-    print(r.text)
-
-# 策略链(默认引擎顺序)
-results = jykj_ocr.ocr("report.pdf", max_pages=10, dpi=300)
-
-# 一次性命名预设(不改配置文件)
-results = jykj_ocr.ocr("stamp.png", strategy_name="quality")
-
-# 最佳策略(所有引擎各跑一次)
-results = jykj_ocr.ocr("scan.png", strategy_name="bestof-smart")
-
-# 只要拼接好的 markdown
+# 离线识别,一行搞定
 text = jykj_ocr.ocr_to_text("scan.png", engine="rapidocr")
+print(text)
 ```
 
-**签名**:
+**RESTful API**:
+
+```bash
+python -m jykj_ocr serve --port 8000 &   # 启动服务
+
+curl -s http://localhost:8000/ocr \
+  -F "file=@scan.png" \
+  -F "engine=rapidocr" \
+  -F "format=json"
+```
+
+两种调用路径的**请求处理流程**完全相同:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    alt Python SDK
+        participant U as 用户代码
+        U->>+A: ocr("scan.png", engine="rapidocr")
+    else RESTful API
+        participant C as 客户端(curl)
+        C->>+S: POST /ocr multipart
+        S->>A: _recognise(body.image_url)
+    end
+
+    A->>INPUT: load(source) 解析输入
+    INPUT-->>A: PageImage
+    A->>REG: build_pipeline(config)
+    REG-->>A: StrategyEngine
+    A->>ENGINE: recognise(page)
+    ENGINE-->>A: OCRResult
+    A-->>U: List[OCRResult]
+    S-->>C: JSON 响应
+```
+
+---
+
+## 7. Python SDK
+
+> 完整可运行示例见 `scripts/demo.py`(`python scripts/demo.py [图片路径]`),
+> 四种场景一次跑通。
+
+### 7.1 核心函数
 
 ```python
 ocr(source: str, *,
@@ -192,56 +371,181 @@ ocr(source: str, *,
    dpi: int = 200,
    retries: int = 1,
    strategy_name: str | None = None) -> List[OCRResult]
+
+ocr_to_text(source: str, ...) -> str
 ```
 
-> `source` 支持文件路径、`http(s)://` URL,以及 `data:` URI(如
-> `data:image/png;base64,...`)。**不接受裸 bytes**。
-> 如需识别内存图片,先 `base64.b64encode(img_bytes).decode()` 后拼接为
-> `data:image/png;base64,<payload>` 传入,或先写入临时文件再传路径。
+### 7.2 输入格式(`source` 参数)
+
+`source` 支持三种形式:
+
+| 形式 | 示例 | 说明 |
+|------|------|------|
+| 本地文件路径 | `"scan.png"`, `"/data/report.pdf"` | 图片(PNG/JPG/GIF/BMP/WebP/TIFF)或 PDF |
+| HTTP URL | `"https://example.com/scan.png"` | 自动下载后识别,支持无扩展名 URL(魔数识别) |
+| data URI | `"data:image/png;base64,xxxx"` | 内联图片字节,无需写盘 |
+
+**不接受裸 bytes**。如需识别内存图片:
+
+```python
+import base64
+payload = base64.b64encode(img_bytes).decode()
+data_uri = f"data:image/png;base64,{payload}"
+results = jykj_ocr.ocr(data_uri, engine="rapidocr")
+```
+
+### 7.3 输出结构(`OCRResult`)
+
+`ocr()` 返回 `List[OCRResult]`,每个元素为一页:
+
+```python
+results = jykj_ocr.ocr("report.pdf", max_pages=2)
+for page in results:
+    print(f"--- 第 {results.index(page)+1} 页 ---")
+    print(f"引擎: {page.engine}")        # "rapidocr"
+    print(f"模型: {page.model}")         # "rapidocr-onnxruntime"
+    print(f"耗时: {page.elapsed_ms}ms")
+    print(f"尺寸: {page.width}×{page.height}")
+    print(f"文本: {page.text}")
+    for region in page.regions:
+        print(f"  [{region.confidence:.2f}] {region.text}")
+        print(f"    位置: {region.bbox.x1},{region.bbox.y1} - {region.bbox.x2},{region.bbox.y2}")
+```
 
 `OCRResult` 字段:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `text` | `str` | 全部文本(拼接) |
+| `text` | `str` | 该页识别的全文 |
 | `regions` | `List[TextRegion]` | 各文本块(含 bbox/confidence) |
 | `engine` | `str` | 实际使用的引擎 |
-| `model` | `str` | 模型名(本地引擎为空) |
-| `elapsed_ms` | `int` | 耗时 |
-| `width`/`height` | `int` | 页面尺寸 |
+| `model` | `str` | 模型名(本地引擎为 onnx 版本号,远程为模型名) |
+| `elapsed_ms` | `int` | 识别耗时(毫秒) |
+| `width` / `height` | `int` | 页面像素尺寸 |
 | `ok` | `bool` | 是否有可用文本 |
 
-## 6. HTTP API
+### 7.4 输出结构示意
+
+```mermaid
+flowchart TB
+    RESULT["List[OCRResult]<br/>1 页 = 1 个 OCRResult"]
+    RESULT --> PAGE["OCRResult"]
+    PAGE --> TEXT["text: str"]
+    PAGE --> ENGINE["engine: str"]
+    PAGE --> MODEL["model: str"]
+    PAGE --> ELAPSED["elapsed_ms: int"]
+    PAGE --> SIZE["width/height: int"]
+    PAGE --> OK["ok: bool"]
+    PAGE --> REGIONS["regions: List[TextRegion]"]
+    REGIONS --> REGION["TextRegion"]
+    REGION --> RTEXT["text: str"]
+    REGION --> CONF["confidence: float 0.0-1.0"]
+    REGION --> BBOX["bbox: BoundingBox"]
+    BBOX --> X1Y1["x1, y1: int"]
+    BBOX --> X2Y2["x2, y2: int"]
+    BBOX --> WH["width, height: int"]
+
+    classDef result fill:#fff9c4,stroke:#f57f17
+    classDef field fill:#e8f1ff,stroke:#1565c0
+    class RESULT,PAGE result
+    class TEXT,ENGINE,MODEL,ELAPSED,SIZE,OK,REGIONS,REGION field
+```
+
+### 7.5 完整案例
+
+#### 案例 1:离线识别单张图片
+
+```python
+import jykj_ocr
+
+results = jykj_ocr.ocr("scan.png", engine="rapidocr")
+for r in results:
+    print(r.engine, r.model, len(r.regions), "regions")
+    print(r.text)
+```
+
+#### 案例 2:识别 PDF 前 10 页,指定 DPI
+
+```python
+results = jykj_ocr.ocr("report.pdf", max_pages=10, dpi=300)
+full_text = "\n\n".join(r.text for r in results)
+print(f"共 {len(results)} 页,总计 {len(full_text)} 字")
+```
+
+#### 案例 3:远程识别(硅基流动)
+
+```python
+# 需提前设置 OPENAI_API_KEY
+results = jykj_ocr.ocr("scan.png", engine="siliconflow")
+for r in results:
+    print(f"引擎={r.engine} 模型={r.model} 区域数={len(r.regions)}")
+    print(r.text)
+```
+
+#### 案例 4:使用命名预设(窜行自动降级 + 阅读顺序重排)
+
+```python
+results = jykj_ocr.ocr("stamp.png", strategy_name="quality")
+# quality == seq-any:rapidocr 窜行时自动降级到 VL,并重排阅读顺序
+```
+
+#### 案例 5:最佳策略(所有引擎各跑一次,选最优)
+
+```python
+results = jykj_ocr.ocr("scan.png", strategy_name="bestof-smart")
+# bestof-smart:置信度 × 100 − 窜行惩罚 + 文本长度 + 语义流畅度
+```
+
+#### 案例 6:只取拼接好的文本
+
+```python
+text = jykj_ocr.ocr_to_text("scan.png", engine="rapidocr")
+print(text)   # 纯文本,无 JSON 包裹
+```
+
+#### 案例 7:用 data URI 识别内存图片
+
+```python
+import base64
+with open("scan.png", "rb") as f:
+    payload = base64.b64encode(f.read()).decode()
+data_uri = f"data:image/png;base64,{payload}"
+results = jykj_ocr.ocr(data_uri, engine="rapidocr")
+```
+
+---
+
+## 8. RESTful API
+
+### 8.1 启动服务
 
 ```bash
 python -m jykj_ocr serve --port 8000
+# 或
+JYKJ_OCR_PORT=8000 python -m uvicorn jykj_ocr.server:app --host 0.0.0.0
 ```
 
-服务启动后访问 `http://localhost:8000/docs` 可查看交互式 Swagger 文档。
+启动后访问 `http://localhost:8000/docs` 查看交互式 Swagger 文档。
 
-### 6.1 端点一览
+### 8.2 端点一览
 
 | 方法 | 路径 | 输入方式 | 输出结构 |
 |------|------|----------|:---:|
-| `POST` | `/ocr` | multipart 上传文件 | ✅ 统一(见 §6.3) |
-| `POST` | `/ocr/{preset}` | multipart 上传文件 | ✅ 统一(见 §6.3) |
-| `POST` | `/ocr/text` | JSON body | ✅ 统一(见 §6.3) |
-| `POST` | `/ocr/{preset}/text` | JSON body | ✅ 统一(见 §6.3) |
+| `POST` | `/ocr` | multipart 上传文件 | ✅ 统一(见 §8.4) |
+| `POST` | `/ocr/{preset}` | multipart 上传文件 | ✅ 统一(见 §8.4) |
+| `POST` | `/ocr/text` | JSON body | ✅ 统一(见 §8.4) |
+| `POST` | `/ocr/{preset}/text` | JSON body | ✅ 统一(见 §8.4) |
 | `GET` | `/config` | — | ❌ 单独结构 |
 | `POST` | `/config` | JSON body(运行时覆盖) | ❌ 单独结构 |
 | `DELETE` | `/config` | — | ❌ 单独结构 |
 | `GET` | `/health` | — | ❌ `{status, engines}` |
 | `GET` | `/engines` | — | ❌ `{engines, configured}` |
 
-**四个 OCR 端点(`/ocr`、`/ocr/{preset}`、`/ocr/text`、`/ocr/{preset}/text`)返回结构完全一致**。只有 `format=text`/`markdown` 时退化为纯文本。`{preset}` 路径参数见 §7.1(命名策略预设)。
+**四个 OCR 端点返回结构完全一致**(`{pages, text, engine, page_count}`)。只有 `format=text`/`markdown` 时退化为纯文本。`{preset}` 路径参数见 §9.1(命名策略预设)。
 
----
+### 8.3 输入格式
 
-### 6.2 输入格式
-
-#### 6.2.1 multipart 上传(`POST /ocr`、`POST /ocr/{preset}`)
-
-用于上传本地图片或 PDF 文件。
+#### 8.3.1 multipart 上传(`POST /ocr`、`POST /ocr/{preset}`)
 
 **表单字段**:
 
@@ -256,6 +560,32 @@ python -m jykj_ocr serve --port 8000
 | `max_pages` | int | — | PDF 页数上限 |
 | `dpi` | int | 200 | PDF 渲染 DPI |
 | `format` | string | json | 输出格式:`json`/`text`/`markdown` |
+
+**数据流**:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 客户端
+    participant S as POST /ocr
+    participant T as 临时文件
+    participant L as load()
+    participant P as Pipeline
+
+    C->>S: multipart file + fields
+    S->>T: 写入临时文件
+    T-->>S: tmp.name
+    S->>L: load(tmp.name, dpi=...)
+    L-->>S: PageImage[]
+    S->>P: build_pipeline(config)
+    P->>P: recognise(page)
+    P-->>S: OCRResult[]
+    S->>S: _ocr_response(fmt)
+    S-->>C: JSON / text
+    S->>T: unlink()
+```
+
+**示例**:
 
 ```bash
 # 上传本地图片,指定引擎和输出格式
@@ -275,17 +605,14 @@ curl -s http://localhost:8000/ocr/bestof \
   -F "file=@scan.png" \
   -F "format=json"
 
-# 使用路由 + 覆盖模型
+# 路由 + 覆盖模型
 curl -s http://localhost:8000/ocr/siliconflow \
   -F "file=@scan.png" \
   -F "model=Qwen/Qwen2.5-VL-72B" \
   -F "format=text"
 ```
 
-#### 6.2.2 JSON body(`POST /ocr/text`、`POST /ocr/{preset}/text`)
-
-用于识别 URL 图片、data URI 或 base64 编码的图片字节。请求体为 JSON,
-`Content-Type: application/json`。
+#### 8.3.2 JSON body(`POST /ocr/text`、`POST /ocr/{preset}/text`)
 
 **图片来源(三选一,只能传一个)**:
 
@@ -307,6 +634,28 @@ curl -s http://localhost:8000/ocr/siliconflow \
 | `max_pages` | int | — | PDF 页数上限 |
 | `dpi` | int | 200 | PDF 渲染 DPI |
 | `format` | string | `json` | 输出格式 |
+
+**三选一校验流程**:
+
+```mermaid
+flowchart TD
+    START["收到 JSON body"]
+    START --> CHECK{"提供的字段数"}
+    CHECK -->|0 个| ERR400["HTTP 400<br/>provide exactly one of..."]
+    CHECK -->|>1 个| ERR400
+    CHECK -->|1 个| TYPE{"字段类型"}
+    TYPE -->|image_url| URL["URL / 本地路径<br/>→ load()"]
+    TYPE -->|image_b64| B64["加 data: 前缀<br/>→ load()"]
+    TYPE -->|image_data| DATA["data URI<br/>→ load()"]
+    URL --> LOAD["load() 解析输入"]
+    B64 --> LOAD
+    DATA --> LOAD
+    LOAD --> PIPELINE["build_pipeline + recognise"]
+    PIPELINE --> OUTPUT["_ocr_response()"]
+
+    style ERR400 fill:#ffebee,stroke:#c62828
+    style LOAD fill:#e8f5e9,stroke:#2e7d32
+```
 
 **示例**:
 
@@ -345,11 +694,9 @@ curl -s http://localhost:8000/ocr/text \
 > **注意**:三个图片来源字段只能传一个,传零个或传多个都会返回 HTTP 400
 > `{"detail":"provide exactly one of image_url, image_b64, or image_data"}`。
 
----
+### 8.4 输出格式
 
-### 6.3 输出格式
-
-#### 6.3.1 JSON 格式(`format=json`,默认)
+#### 8.4.1 JSON 格式(`format=json`,默认)
 
 所有四个 OCR 端点返回**完全相同**的结构:
 
@@ -407,6 +754,40 @@ curl -s http://localhost:8000/ocr/text \
 | `engine` | string | 最终使用的引擎(单页时等于 `pages[0].engine`) |
 | `page_count` | int | 页数 |
 
+**输出结构示意**:
+
+```mermaid
+flowchart TB
+    ROOT["OCR 响应 JSON"]
+    ROOT --> PAGES["pages: array<br/>每页一个对象"]
+    ROOT --> TEXT["text: str<br/>所有页拼接"]
+    ROOT --> ENGINE["engine: str<br/>最终使用的引擎"]
+    ROOT --> COUNT["page_count: int"]
+
+    PAGES --> PAGE["pages[0]"]
+    PAGE --> PT["text"]
+    PAGE --> PE["engine"]
+    PAGE --> PM["model"]
+    PAGE --> PEL["elapsed_ms"]
+    PAGE --> PW["width"]
+    PAGE --> PH["height"]
+    PAGE --> PRC["region_count"]
+    PAGE --> PR["regions: array"]
+
+    PR --> REGION["regions[0]"]
+    REGION --> RT["text"]
+    REGION --> RC["confidence"]
+    REGION --> RB["bbox: {x1,y1,x2,y2,width,height}"]
+    REGION --> RE["engine"]
+
+    classDef root fill:#fff9c4,stroke:#f57f17,stroke-width:3px
+    classDef page fill:#e8f1ff,stroke:#1565c0
+    classDef region fill:#f3e5f5,stroke:#6a1b9a
+    class ROOT root
+    class PAGE,PR page
+    class REGION region
+```
+
 **多页 PDF 示例**:
 
 ```json
@@ -439,7 +820,7 @@ curl -s http://localhost:8000/ocr/text \
 }
 ```
 
-#### 6.3.2 text / markdown 格式(`format=text` 或 `format=markdown`)
+#### 8.4.2 text / markdown 格式(`format=text` 或 `format=markdown`)
 
 直接返回拼接后的纯文本(每个页面的 markdown 卡片用双换行拼接),
 无 JSON 包裹,`Content-Type: text/plain`:
@@ -460,9 +841,7 @@ curl -s http://localhost:8000/ocr/text \
 
 两种格式内容完全相同,`text` 和 `markdown` 可互换使用。
 
----
-
-### 6.4 完整案例
+### 8.5 完整案例
 
 #### 案例 1:上传文件,JSON 输出
 
@@ -557,9 +936,7 @@ curl -s http://localhost:8000/ocr/text \
   -d '{"image_url": "https://example.com/blurry.png", "engine": "rapidocr"}'
 ```
 
----
-
-### 6.5 运行时配置 `GET/POST/DELETE /config`
+### 8.6 运行时配置 `GET/POST/DELETE /config`
 
 不重启改模型或引擎顺序:
 
@@ -598,7 +975,7 @@ curl -s -X DELETE http://localhost:8000/config
 
 > `GET /config` 永远只返回 `has_api_key: true/false` 布尔值,绝不返回 key 明文。
 
-### 6.6 辅助端点
+### 8.7 辅助端点
 
 ```bash
 # 健康检查
@@ -610,9 +987,26 @@ curl -s http://localhost:8000/engines
 # {"engines":{"rapidocr":"本地...","siliconflow":"硅基流动...","multimodal":"通用OpenAI兼容..."},"configured":["rapidocr","siliconflow","multimodal"]}
 ```
 
-### 6.7 异常映射
+### 8.8 异常映射
 
 所有异常统一返回 `{"detail": "错误描述"}` 格式。
+
+```mermaid
+flowchart LR
+    INPUT["InputError<br/>坏输入/空页"] --> H400[("HTTP 400")]
+    NOTAVAIL["EngineNotAvailable<br/>缺依赖/key/URL"] --> H422a[("HTTP 422")]
+    ENGINERR["EngineError<br/>引擎调用失败"] --> H502[("HTTP 502")]
+    STRATEGYERR["StrategyError<br/>链耗尽"] --> H422b[("HTTP 422")]
+    PRESERR["未知 preset"] --> H404[("HTTP 404")]
+    FORMATERR["格式错误<br/>字段数/类型"] --> H400b[("HTTP 400")]
+
+    style H400 fill:#fff3e0,stroke:#e65100
+    style H422a fill:#fff9c4,stroke:#f57f17
+    style H422b fill:#fff9c4,stroke:#f57f17
+    style H502 fill:#ffebee,stroke:#c62828
+    style H404 fill:#fce4ec,stroke:#ad1457
+    style H400b fill:#fff3e0,stroke:#e65100
+```
 
 | 异常 | HTTP 状态码 | 典型场景 | 响应示例 |
 |------|:----:|------|------|
@@ -623,9 +1017,11 @@ curl -s http://localhost:8000/engines
 | 未知 preset | 404 | `/ocr/xxx` 路由既非引擎也非策略预设 | `{"detail":"unknown preset 'xxx'..."}` |
 | 格式错误 | 400 | 图片三选一只传一个、format 非法、strategy JSON 非对象 | `{"detail":"provide exactly one of image_url, image_b64, or image_data"}` |
 
-## 7. 引擎使用策略
+---
 
-### 7.1 命名策略预设(strategy presets)
+## 9. 策略预设
+
+### 9.1 命名策略预设(strategy presets)
 
 项目把常用引擎组合固化为**命名预设**,配置里固定默认策略,单次请求可临时切换
 (一次性,不改动服务端 base config):
@@ -649,22 +1045,19 @@ curl -s http://localhost:8000/engines
 | `bestof-fastest` | 耗时(elapsed_ms)最低 | 追求速度 |
 | `bestof-confidence` | 平均置信度最高 | 追求质量 |
 | `bestof-longest` | 文本最长 | 追求完整性 |
-| `bestof-fluency` | 语义流畅度(短语密度 + CJK 标点 − 单字碎片惩罚) | 追求"读起来像人话",适合对比本地碎片化结果与 VL 连贯结果 |
+| `bestof-fluency` | 语义流畅度(短语密度 + CJK 标点 − 单字碎片惩罚) | 追求"读起来像人话" |
 | `bestof:<mode>` | 同上任意 mode | 等价于 `bestof-mode`,冒号语法别名 |
 
 **bestof-fluency 评分信号**:
 
-- **短语密度**(上限 +15):每区域平均字符数,`mean_phrase_length`——句子越长越连贯
-- **CJK 标点比例**(上限 +5):句子标记(`,。！？、；:()`等)占比——有标点即像自然语言
-- **单字碎片惩罚**(上限 −25):`len(p)==1` 的区域计数 × 0.3——166 个单字的 rapidocr 输出会被明显扣减
+- **短语密度**(上限 +15):每区域平均字符数,句子越长越连贯
+- **CJK 标点比例**(上限 +5):句子标记占比——有标点即像自然语言
+- **单字碎片惩罚**(上限 −25):166 个单字的 rapidocr 输出会被明显扣减
 
-> 综合分 smart 已集成 fluency:对兰亭序实测,rapidocr 输出 166 个单字/短词(fluency ≈ −23),
+> 对兰亭序实测,rapidocr 输出 166 个单字/短词(fluency ≈ −23),
 > siliconflow 输出完整古文句子(fluency ≈ +15),`bestof-fluency`/`bestof-smart` 均正确选硅基流动。
 
-> `bestof` 比 `seq*` 慢(所有引擎都跑),但能拿到所有候选里最好的结果——
-> 适合需要"不管用什么模型,只要识别质量最好"的场景。
-
-**legacy 别名**(保留兼容,与 seq* 完全等价):
+**legacy 别名**:
 
 | 旧名 | 等价于 |
 |------|--------|
@@ -677,16 +1070,11 @@ curl -s http://localhost:8000/engines
 # CLI
 python -m jykj_ocr scan.png --strategy-name quality
 
-# 最佳策略:所有引擎各跑一次,选识别质量最优
-python -m jykj_ocr scan.png --strategy-name bestof    # seq-any,窜行自动降级
-python -m jykj_ocr scan.png --strategy-name bestof      # 所有引擎各跑一次,选最佳
-python -m jykj_ocr scan.png --strategy-name bestof-fastest
-
 # Python API
 jykj_ocr.ocr("scan.png", strategy_name="seq-any")
 jykj_ocr.ocr("scan.png", strategy_name="bestof-smart")
 
-# HTTP —— /ocr(multipart)与 /ocr/text(JSON)均支持
+# HTTP
 curl -s http://localhost:8000/ocr -F "file=@scan.png" -F "strategy_name=bestof"
 curl -s http://localhost:8000/ocr/text \
   -H "Content-Type: application/json" \
@@ -694,22 +1082,20 @@ curl -s http://localhost:8000/ocr/text \
 ```
 
 未知名称:CLI 报 argparse 错并列出可选值;HTTP 返回 400
-`unknown strategy 'xxx'; choose one of local, vl, seq, seq-any, seq-low_conf, seq-line_overlap, bestof, ...`。
+`unknown strategy 'xxx'; choose one of local, vl, seq, seq-any, ...`。
 
 **优先级**:单次请求 `strategy_name` > `POST /config` 运行时覆盖 > `config.yaml`。
-预设展开走 `apply_strategy_preset`,返回 deepcopy——输入配置永不被改动。
 
-### 7.2 更多 OCR 引擎接入
+### 9.2 更多 OCR 引擎接入
 
 本地/远程划分走 `remote_engines()`(内置 siliconflow、multimodal)。新注册引擎
-**无需改代码**即被预设识别:`local` 保留它(除非列入远程名单)、`vl` 排除它、
-`seq*`/`bestof*`/`fallback`/`quality` 尊重其 `enabled` 标志。要把新厂商归入远程侧:
+**无需改代码**即被预设识别。要把新厂商归入远程侧:
 
 ```bash
 export JYKJ_OCR_REMOTE_ENGINES="paddlecloud,acme-vl"   # 逗号分隔,小写
 ```
 
-### 7.3 底层重试模式(retry_mode)
+### 9.3 底层重试模式(retry_mode)
 
 预设最终都落到 `retry_mode`。策略引擎按 `config.engines` 顺序尝试,每个引擎最多
 重试 `max_retries` 次,由下列谓词决定是否换引擎:
@@ -719,7 +1105,7 @@ export JYKJ_OCR_REMOTE_ENGINES="paddlecloud,acme-vl"   # 逗号分隔,小写
 | `no_text` | 结果无文本 → 重试/切换(默认) |
 | `low_confidence` | 平均置信度 < `min_confidence` → 重试/切换 |
 | `line_overlap` | 无文本**或**检测到窜行 → 重试/切换 |
-| `any` | 低置信度**或**窜行任一命中 → 重试/切换(`combine_predicates` 组合) |
+| `any` | 低置信度**或**窜行任一命中 → 重试/切换 |
 | `none` / `first_success` | 第一个成功结果即返回,不重试 |
 
 链耗尽时:返回所有尝试中 `ok` 且文本最长的结果(best-of 兜底);若无任何 `ok`
@@ -731,43 +1117,7 @@ curl -s -X POST http://localhost:8000/config \
   -d '{"strategy":{"retry_mode":"any","min_confidence":0.75,"max_retries":2}}'
 ```
 
-## 8. Docker 部署
-
-```bash
-# 构建并启动(含 healthcheck + 模型权重持久化)
-docker compose up --build
-
-# 单容器
-docker build -t jykj_ocr .
-docker run --rm -p 8000:8000 --env-file .env jykj_ocr
-
-# 容器内一次性任务
-docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
-    python -m jykj_ocr /data/scan.png --engine siliconflow
-```
-
-- 基础镜像 `python:3.11-slim`,非 root 用户运行
-- `HEALTHCHECK` 探测 `/health`
-- 配置/端口:`JYKJ_OCR_CONFIG` / `JYKJ_OCR_PORT`
-- compose 持久化 RapidOCR 模型权重到 `rapidocr-models` 卷,避免重复下载
-
-## 9. 测试
-
-```bash
-.venv/Scripts/python -m pytest tests -q
-```
-
-- **CI 基线**:120 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
-- 覆盖:models、config、strategy、engines(multimodal OpenAI 响应解析、rapidocr
-  1.x/1.4.x/2.x 返回形态)、策略预设(local/vl/seq*/bestof*、deepcopy 不变性、
-  `JYKJ_OCR_REMOTE_ENGINES` 扩展)、窜行检测与阅读顺序重排、inputs 魔数识别
-
-端到端接口测试(需联网 + key,非 CI):
-
-```bash
-export OPENAI_API_KEY=...  OPENAI_BASE_URL=https://api.siliconflow.cn/v1
-.venv/Scripts/python scripts/test_interfaces.py
-```
+---
 
 ## 10. 常见问题
 
@@ -787,7 +1137,8 @@ A: 改 `OPENAI_BASE_URL` 与 `OPENAI_API_KEY` 两个环境变量,代码与配置
    multimodal 引擎会自动走新端点。
 
 **Q: 内存里的图片怎么识别?**
-A: `ocr()` 只收路径/URL。先 `tempfile.NamedTemporaryFile` 写盘再传路径。
+A: 先 `base64.b64encode(img_bytes).decode()` 后拼接为
+   `data:image/png;base64,<payload>` 传入,或先写入临时文件再传路径。
 
 **Q: API key 会被泄露吗?**
 A: 不会。`.env` 已 gitignore;`GET /config` 只返回 `has_api_key` 布尔;
