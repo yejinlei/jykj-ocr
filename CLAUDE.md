@@ -70,7 +70,10 @@ docker compose up -d
 - **FastAPI**:
   - `GET /health`,`GET /engines`,`GET /config`,`POST /config`(运行时覆盖模型/引擎/策略),`DELETE /config`
   - `POST /ocr`(multipart,文件 + 可选 `engine`/`model`/`prompt`/`strategy`/`strategy_name`/`max_pages`/`dpi`/`format`)
-  - `POST /ocr/text`(image_url 文本请求,body 支持 `strategy_name`)
+  - `POST /ocr/{preset}`(multipart,路由即策略)
+  - `POST /ocr/text`(JSON body,图片来源三选一:`image_url`(路径/URL) / `image_b64`(base64 字符串) / `image_data`(完整 data URI))
+  - `POST /ocr/{preset}/text`(同 `/ocr/text`,路由参数指定预设)
+  - 所有 OCR 端点输出结构统一:`{pages:[{text,engine,model,elapsed_ms,width,height,region_count,regions}], text, engine, page_count}`;`format=text/markdown` 时退化为纯文本
 - **Python API**:`jykj_ocr.ocr(source, engine=None, config=None, config_path=None, max_pages=None, dpi=200, retries=1, strategy_name=None) -> List[OCRResult]`。
 - **策略预设**(`strategy_name`,一次性):
   - 顺序预设 `seq*`(走 `StrategyEngine`,首个命中即返回):

@@ -157,9 +157,16 @@ def _config_view(config: Config) -> Dict[str, Any]:
 
 
 class TextRequest(BaseModel):
-    """Request body for the image-URL OCR endpoint."""
+    """Request body for the image-input OCR endpoints.
 
-    image_url: str
+    Exactly one of ``image_url`` / ``image_b64`` / ``image_data`` must be
+    provided. They are resolved into a single source string before passing to
+    :func:`engine.inputs.load`, so all three are handled uniformly.
+    """
+
+    image_url: Optional[str] = None
+    image_b64: Optional[str] = None
+    image_data: Optional[str] = None
     engine: Optional[str] = None
     engines: Optional[List[str]] = None
     max_pages: Optional[int] = None
@@ -169,6 +176,28 @@ class TextRequest(BaseModel):
     prompt: Optional[str] = None
     strategy: Optional[Dict[str, Any]] = None
     strategy_name: Optional[str] = None
+
+    def source(self) -> str:
+        """Return the resolved input source.
+
+        Priority: ``image_data`` (raw bytes) > ``image_b64`` (base64) >
+        ``image_url`` (path / http / data URI). Exactly one must be set.
+        """
+        provided = sum(
+            1 for v in (self.image_url, self.image_b64, self.image_data) if v
+        )
+        if provided != 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "provide exactly one of image_url, image_b64, or image_data"
+                ),
+            )
+        if self.image_data is not None:
+            return f"data:application/octet-stream,{self.image_data}"
+        if self.image_b64 is not None:
+            return f"data:image/octet-stream;base64,{self.image_b64}"
+        return self.image_url  # type: ignore[return-value]
 
 
 class ConfigRequest(BaseModel):
@@ -455,12 +484,20 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/ocr/text")
     async def ocr_text(body: TextRequest) -> Any:
-        """识别图片 URL（``http(s)://``）中的文字。"""
-        if not body.image_url:
-            raise HTTPException(status_code=400, detail="image_url is required")
+        """识别图片中的文字。
+
+        Body 三选一:
+          - ``image_url`` —— 本地路径或 ``http(s)://`` URL
+          - ``image_b64``  —— base64 编码的图片字节(自动加 data URI)
+          - ``image_data`` —— data URI(如 ``data:image/png;base64,...``)
+        """
+        try:
+            src = body.source()
+        except HTTPException:
+            raise
         effective = _apply_inline_overrides(state.snapshot(), body)
         results = _recognise(
-            body.image_url,
+            src,
             config=effective,
             engine_name=body.engine,
             max_pages=body.max_pages,
@@ -554,10 +591,13 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     async def ocr_preset_url(preset: str, body: TextRequest) -> Any:
         """路由即策略的 JSON 接口:``POST /ocr/{preset}/text``。
 
-        与 :func:`ocr_preset_upload` 同义,仅 body 用 ``image_url``。
+        与 :func:`ocr_preset_upload` 同义;body 三选一(image_url / image_b64 /
+        image_data),与 :func:`ocr_text` 一致。
         """
-        if not body.image_url:
-            raise HTTPException(status_code=400, detail="image_url is required")
+        try:
+            src = body.source()
+        except HTTPException:
+            raise
         norm = normalise_engine(preset)
         registered = describe_engines()
         lower = preset.lower()
@@ -577,7 +617,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             )
         effective = _apply_inline_overrides(state.snapshot(), body)
         results = _recognise(
-            body.image_url,
+            src,
             config=effective,
             engine_name=body.engine,
             max_pages=body.max_pages,

@@ -194,8 +194,10 @@ ocr(source: str, *,
    strategy_name: str | None = None) -> List[OCRResult]
 ```
 
-> `source` 必须是文件路径或 `http(s)://` URL,**不接受裸 bytes**。
-> 如需识别内存图片,先写入临时文件再传路径。
+> `source` 支持文件路径、`http(s)://` URL,以及 `data:` URI(如
+> `data:image/png;base64,...`)。**不接受裸 bytes**。
+> 如需识别内存图片,先 `base64.b64encode(img_bytes).decode()` 后拼接为
+> `data:image/png;base64,<payload>` 传入,或先写入临时文件再传路径。
 
 `OCRResult` 字段:
 
@@ -215,87 +217,411 @@ ocr(source: str, *,
 python -m jykj_ocr serve --port 8000
 ```
 
-### 6.1 识别上传文件 `POST /ocr`
+服务启动后访问 `http://localhost:8000/docs` 可查看交互式 Swagger 文档。
 
-multipart 表单:
+### 6.1 端点一览
 
-| 字段 | 必填 | 说明 |
-|------|:----:|------|
-| `file` | ✅ | 图片或 PDF |
-| `engine` | — | 强制引擎 |
-| `model` | — | 覆盖模型(仅远程引擎) |
-| `prompt` | — | 覆盖 prompt(仅远程引擎) |
-| `strategy` | — | JSON 字符串,临时策略 |
-| `strategy_name` | — | 一次性命名预设:`local`/`vl`/`seq*`/`bestof*`(见 §7) |
-| `max_pages` | — | PDF 页数上限 |
-| `dpi` | 200 | PDF 渲染 DPI |
-| `format` | `json` | `json` / `text` / `markdown` |
+| 方法 | 路径 | 输入方式 | 输出结构 |
+|------|------|----------|:---:|
+| `POST` | `/ocr` | multipart 上传文件 | ✅ 统一(见 §6.3) |
+| `POST` | `/ocr/{preset}` | multipart 上传文件 | ✅ 统一(见 §6.3) |
+| `POST` | `/ocr/text` | JSON body | ✅ 统一(见 §6.3) |
+| `POST` | `/ocr/{preset}/text` | JSON body | ✅ 统一(见 §6.3) |
+| `GET` | `/config` | — | ❌ 单独结构 |
+| `POST` | `/config` | JSON body(运行时覆盖) | ❌ 单独结构 |
+| `DELETE` | `/config` | — | ❌ 单独结构 |
+| `GET` | `/health` | — | ❌ `{status, engines}` |
+| `GET` | `/engines` | — | ❌ `{engines, configured}` |
+
+**四个 OCR 端点(`/ocr`、`/ocr/{preset}`、`/ocr/text`、`/ocr/{preset}/text`)返回结构完全一致**。只有 `format=text`/`markdown` 时退化为纯文本。`{preset}` 路径参数见 §7.1(命名策略预设)。
+
+---
+
+### 6.2 输入格式
+
+#### 6.2.1 multipart 上传(`POST /ocr`、`POST /ocr/{preset}`)
+
+用于上传本地图片或 PDF 文件。
+
+**表单字段**:
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `file` | File | ✅ | 图片或 PDF 文件 |
+| `engine` | string | — | 强制指定引擎(如 `rapidocr`/`siliconflow`) |
+| `model` | string | — | 覆盖模型名(仅远程引擎生效) |
+| `prompt` | string | — | 覆盖 prompt(仅远程引擎生效) |
+| `strategy` | JSON string | — | 临时策略对象(如 `{"retry_mode":"any","max_retries":2}`) |
+| `strategy_name` | string | — | 一次性命名预设:`local`/`vl`/`seq*`/`bestof*` |
+| `max_pages` | int | — | PDF 页数上限 |
+| `dpi` | int | 200 | PDF 渲染 DPI |
+| `format` | string | json | 输出格式:`json`/`text`/`markdown` |
 
 ```bash
+# 上传本地图片,指定引擎和输出格式
 curl -s http://localhost:8000/ocr \
-  -F "file=@scan.png" -F "engine=siliconflow" -F "format=json"
+  -F "file=@scan.png" \
+  -F "engine=siliconflow" \
+  -F "format=json"
+
+# 上传 PDF,只处理前 5 页,300 DPI
+curl -s http://localhost:8000/ocr \
+  -F "file=@report.pdf" \
+  -F "max_pages=5" \
+  -F "dpi=300"
+
+# 使用命名预设路由:所有引擎择优
+curl -s http://localhost:8000/ocr/bestof \
+  -F "file=@scan.png" \
+  -F "format=json"
+
+# 使用路由 + 覆盖模型
+curl -s http://localhost:8000/ocr/siliconflow \
+  -F "file=@scan.png" \
+  -F "model=Qwen/Qwen2.5-VL-72B" \
+  -F "format=text"
 ```
 
-JSON 响应:
+#### 6.2.2 JSON body(`POST /ocr/text`、`POST /ocr/{preset}/text`)
+
+用于识别 URL 图片、data URI 或 base64 编码的图片字节。请求体为 JSON,
+`Content-Type: application/json`。
+
+**图片来源(三选一,只能传一个)**:
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `image_url` | string | 本地路径或 `http(s)://` URL |
+| `image_b64` | string | 纯 base64 字符串(自动加 `data:` 前缀) |
+| `image_data` | string | 完整 data URI,如 `data:image/png;base64,xxxx` |
+
+**通用字段**:
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|:----:|------|
+| `engine` | string | — | 强制引擎 |
+| `model` | string | — | 覆盖模型(仅远程引擎) |
+| `prompt` | string | — | 覆盖 prompt(仅远程引擎) |
+| `strategy` | object | — | 临时策略 JSON 对象 |
+| `strategy_name` | string | — | 一次性命名预设 |
+| `max_pages` | int | — | PDF 页数上限 |
+| `dpi` | int | 200 | PDF 渲染 DPI |
+| `format` | string | `json` | 输出格式 |
+
+**示例**:
+
+```bash
+# 按 URL 识别(最常用)
+curl -s http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_url":"https://example.com/scan.png","engine":"multimodal","format":"json"}'
+
+# URL 无扩展名也能识别(按文件头魔数自动判型)
+curl -s http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_url":"https://example.com/img/u=1234&fm=3074","strategy_name":"vl"}'
+
+# 传 base64 字符串
+curl -s http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_b64":"iVBORw0KGgoAAAANSUhEUgAA...","engine":"rapidocr"}'
+
+# 传完整 data URI
+curl -s http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_data":"data:image/png;base64,iVBORw0KGgoAAA...","engine":"rapidocr"}'
+
+# 路由即策略:用 bestof 预设,base64 输入
+curl -s http://localhost:8000/ocr/bestof/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_b64":"iVBORw0KGgoAAA...","format":"json"}'
+
+# 本地文件路径(容器环境挂载共享目录时可用)
+curl -s http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_url":"/data/scan.png","engine":"rapidocr"}'
+```
+
+> **注意**:三个图片来源字段只能传一个,传零个或传多个都会返回 HTTP 400
+> `{"detail":"provide exactly one of image_url, image_b64, or image_data"}`。
+
+---
+
+### 6.3 输出格式
+
+#### 6.3.1 JSON 格式(`format=json`,默认)
+
+所有四个 OCR 端点返回**完全相同**的结构:
 
 ```json
 {
-  "pages": [{"text": "...", "regions": [...], "engine": "siliconflow", "model": "..."}],
-  "text": "...",
-  "engine": "siliconflow",
+  "pages": [
+    {
+      "text": "永和九年,岁在癸丑,暮春之初...",
+      "engine": "rapidocr",
+      "model": "rapidocr-onnxruntime",
+      "elapsed_ms": 10286,
+      "width": 750,
+      "height": 1390,
+      "region_count": 166,
+      "regions": [
+        {
+          "text": "永和九年岁在癸丑",
+          "confidence": 0.97,
+          "bbox": {
+            "x1": 672,
+            "y1": 12,
+            "x2": 737,
+            "y2": 1370,
+            "width": 65,
+            "height": 1358
+          },
+          "engine": "rapidocr"
+        }
+      ]
+    }
+  ],
+  "text": "永和九年,岁在癸丑...\n\n(多页时用双换行拼接)",
+  "engine": "rapidocr",
   "page_count": 1
 }
 ```
 
-### 6.2 识别图片 URL `POST /ocr/text`
+**字段说明**:
 
-```bash
-curl -s http://localhost:8000/ocr/text \
-  -H "Content-Type: application/json" \
-  -d '{"image_url":"https://example.com/scan.png","engine":"multimodal","format":"text"}'
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `pages` | array | 每页一个对象;单图也是 1 个元素 |
+| `pages[].text` | string | 该页识别全文 |
+| `pages[].engine` | string | 该页最终使用的引擎名 |
+| `pages[].model` | string | 模型名(本地引擎为 onnx 版本号,远程为模型名) |
+| `pages[].elapsed_ms` | int | 该页识别耗时(毫秒) |
+| `pages[].width` / `height` | int | 页面像素尺寸 |
+| `pages[].region_count` | int | 文本区域数量 |
+| `pages[].regions` | array | 每个文本区域的详细信息 |
+| `pages[].regions[].text` | string | 该区域的文字 |
+| `pages[].regions[].confidence` | float | 置信度 0.0–1.0 |
+| `pages[].regions[].bbox` | object | 边界框(含 x1/y1/x2/y2/width/height) |
+| `pages[].regions[].engine` | string | 识别该区域的引擎 |
+| `text` | string | 所有页拼接后的完整文本 |
+| `engine` | string | 最终使用的引擎(单页时等于 `pages[0].engine`) |
+| `page_count` | int | 页数 |
 
-# 也可以用命名预设;URL 无扩展名也能识别(按文件头魔数自动判型)
-curl -s http://localhost:8000/ocr/text \
-  -H "Content-Type: application/json" \
-  -d '{"image_url":"https://example.com/img/u=1234&fm=3074","strategy_name":"vl"}'
+**多页 PDF 示例**:
+
+```json
+{
+  "pages": [
+    {
+      "text": "第一章 引言",
+      "engine": "rapidocr",
+      "model": "rapidocr-onnxruntime",
+      "elapsed_ms": 8500,
+      "width": 595,
+      "height": 842,
+      "region_count": 42,
+      "regions": [...]
+    },
+    {
+      "text": "第二章 方法",
+      "engine": "rapidocr",
+      "model": "rapidocr-onnxruntime",
+      "elapsed_ms": 9200,
+      "width": 595,
+      "height": 842,
+      "region_count": 58,
+      "regions": [...]
+    }
+  ],
+  "text": "第一章 引言\n\n第二章 方法",
+  "engine": "rapidocr",
+  "page_count": 2
+}
 ```
 
-### 6.3 运行时配置 `GET/POST/DELETE /config`
+#### 6.3.2 text / markdown 格式(`format=text` 或 `format=markdown`)
+
+直接返回拼接后的纯文本(每个页面的 markdown 卡片用双换行拼接),
+无 JSON 包裹,`Content-Type: text/plain`:
+
+```text
+# 识别结果 - 第 1 页
+
+- **engine**: rapidocr
+- **model**: rapidocr-onnxruntime
+- **elapsed_ms**: 10286
+- **size**: 750 × 1390
+- **regions**: 166
+
+## 文本
+
+永和九年,岁在癸丑,暮春之初,会于会稽山阴之兰亭...
+```
+
+两种格式内容完全相同,`text` 和 `markdown` 可互换使用。
+
+---
+
+### 6.4 完整案例
+
+#### 案例 1:上传文件,JSON 输出
+
+```bash
+curl -s -X POST http://localhost:8000/ocr \
+  -F "file=@tests/兰亭序.jpeg" \
+  -F "engine=rapidocr" \
+  -F "format=json"
+```
+
+```json
+{
+  "pages": [{
+    "text": "永和九年岁在癸丑...",
+    "engine": "rapidocr",
+    "model": "rapidocr-onnxruntime",
+    "elapsed_ms": 10286,
+    "width": 750,
+    "height": 1390,
+    "region_count": 166,
+    "regions": [
+      {"text": "永和九年岁在癸丑", "confidence": 0.97, "bbox": {...}, "engine": "rapidocr"}
+    ]
+  }],
+  "text": "永和九年岁在癸丑...",
+  "engine": "rapidocr",
+  "page_count": 1
+}
+```
+
+#### 案例 2:URL 识别,markdown 输出
+
+```bash
+curl -s -X POST http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://example.com/scan.png",
+    "engine": "siliconflow",
+    "format": "markdown"
+  }'
+```
+
+```text
+# 识别结果 - 第 1 页
+
+- **engine**: siliconflow
+- **model**: PaddlePaddle/PaddleOCR-VL-1.5
+- **elapsed_ms**: 8500
+- **size**: 800 × 1200
+- **regions**: 24
+
+## 文本
+
+永和九年,岁在癸丑,暮春之初...
+```
+
+#### 案例 3:base64 识别,JSON 输出
+
+```bash
+curl -s -X POST http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_b64": "iVBORw0KGgoAAAANSUhEUgAA...",
+    "engine": "rapidocr",
+    "format": "json"
+  }'
+```
+
+#### 案例 4:策略预设路由 + 临时覆盖
+
+```bash
+curl -s -X POST http://localhost:8000/ocr/bestof \
+  -F "file=@scan.png" \
+  -F "model=Qwen/Qwen2.5-VL-72B" \
+  -F "format=json"
+```
+
+路由参数 `bestof` 指定"所有引擎各跑一次,按 smart 评分选最佳";
+`model` 覆盖远程引擎的模型为 Qwen2.5-VL-72B。
+
+#### 案例 5:运行时调整策略 + 按 URL 识别
+
+```bash
+# 先调整策略:降低置信度阈值,增大重试次数
+curl -s -X POST http://localhost:8000/config \
+  -H "Content-Type: application/json" \
+  -d '{"strategy": {"retry_mode": "low_confidence", "min_confidence": 0.6, "max_retries": 2}}'
+
+# 再识别,自动应用新策略
+curl -s http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_url": "https://example.com/blurry.png", "engine": "rapidocr"}'
+```
+
+---
+
+### 6.5 运行时配置 `GET/POST/DELETE /config`
 
 不重启改模型或引擎顺序:
 
 ```bash
-# 查看(不泄露 key)
+# 查看当前配置(不泄露 key)
 curl -s http://localhost:8000/config
+```
 
-# 切换模型
+```json
+{
+  "engines": [
+    {"name": "rapidocr", "enabled": true, "model": "", "base_url": ""},
+    {"name": "siliconflow", "enabled": true, "model": "PaddlePaddle/PaddleOCR-VL-1.5", "base_url": "https://api.siliconflow.cn/v1"},
+    {"name": "multimodal", "enabled": false}
+  ],
+  "strategy": {"max_retries": 1, "retry_mode": "no_text", "min_confidence": 0.7},
+  "has_api_key": true,
+  "overridden": false
+}
+```
+
+```bash
+# 切换模型(不回显 key)
 curl -s -X POST http://localhost:8000/config \
   -H "Content-Type: application/json" \
   -d '{"engines":[{"name":"siliconflow","model":"Qwen/Qwen2.5-VL-72B"}]}'
 
 # 调整策略
 curl -s -X POST http://localhost:8000/config \
+  -H "Content-Type: application/json" \
   -d '{"strategy":{"max_retries":2,"retry_mode":"low_confidence","min_confidence":0.8}}'
 
-# 还原
+# 还原到 config.yaml 默认值
 curl -s -X DELETE http://localhost:8000/config
 ```
 
-`GET /config` 永远只返回 `has_api_key: true/false`,不返回 key 明文。
+> `GET /config` 永远只返回 `has_api_key: true/false` 布尔值,绝不返回 key 明文。
 
-### 6.4 辅助端点
+### 6.6 辅助端点
 
-- `GET /health` → `{"status":"ok","engines":[...]}`
-- `GET /engines` → 可用引擎 + 当前配置顺序
+```bash
+# 健康检查
+curl -s http://localhost:8000/health
+# {"status":"ok","engines":["rapidocr","siliconflow","multimodal"]}
 
-### 6.5 异常映射
+# 引擎列表
+curl -s http://localhost:8000/engines
+# {"engines":{"rapidocr":"本地...","siliconflow":"硅基流动...","multimodal":"通用OpenAI兼容..."},"configured":["rapidocr","siliconflow","multimodal"]}
+```
 
-| 异常 | HTTP |
-|------|------|
-| `InputError`(坏输入/空页) | 400 |
-| `EngineNotAvailable`(缺依赖/key/URL) | 422 |
-| `EngineError`(引擎失败) | 502 |
-| `StrategyError`(链耗尽) | 422 |
+### 6.7 异常映射
+
+所有异常统一返回 `{"detail": "错误描述"}` 格式。
+
+| 异常 | HTTP 状态码 | 典型场景 | 响应示例 |
+|------|:----:|------|------|
+| `InputError` | 400 | 文件不存在、图片损坏、URL 无法下载、base64 解码失败 | `{"detail":"input not found: /tmp/x.png"}` |
+| `EngineNotAvailable` | 422 | 缺少依赖库、API key 为空、base_url 未配置 | `{"detail":"siliconflow requires OPENAI_API_KEY"}` |
+| `EngineError` | 502 | 引擎调用超时、HTTP 402 余额不足、网络错误 | `{"detail":"HTTP 402","engine":"siliconflow"}` |
+| `StrategyError` | 422 | 策略链中所有引擎均失败且无可用结果 | `{"detail":"all engines exhausted"}` |
+| 未知 preset | 404 | `/ocr/xxx` 路由既非引擎也非策略预设 | `{"detail":"unknown preset 'xxx'..."}` |
+| 格式错误 | 400 | 图片三选一只传一个、format 非法、strategy JSON 非对象 | `{"detail":"provide exactly one of image_url, image_b64, or image_data"}` |
 
 ## 7. 引擎使用策略
 
