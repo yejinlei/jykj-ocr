@@ -88,6 +88,12 @@ def _decode_data_uri(uri: str) -> str:
     Accepts ``data:<type>[;base64],<payload>``. The extension is derived from
     the ``<type>`` (e.g. ``image/png`` -> ``.png``); if it is unrecognised the
     raw bytes are written to a ``.bin`` file so the caller can sniff by magic.
+
+    The server's ``TextRequest.image_b64`` field tags its payload as
+    ``data:image/octet-stream;base64,...`` — the extension becomes ``.bin``
+    because the mime is not in ``ext_map``. The ``_looks_like_image`` magic
+    sniff in :func:`load` still recognises the file, so this works, but the
+    extension is misleading to anyone inspecting temp files.
     """
     import base64
 
@@ -121,6 +127,15 @@ def _decode_data_uri(uri: str) -> str:
     except Exception as exc:
         raise InputError(f"failed to decode data URI: {exc}") from exc
 
+    # Fallback for generic ``application/octet-stream`` + ``;base64`` (the
+    # server's ``image_b64`` field). The MIME carries no type info, so sniff
+    # the decoded payload for a known image/pdf magic and patch the extension
+    # if it matches. Keeps behaviour correct when upstream forgot the type.
+    if suffix == ".bin" and mime.startswith("application/octet"):
+        sniffed = _magic_bytes_of(raw)
+        if sniffed:
+            suffix = sniffed
+
     handle = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     try:
         handle.write(raw)
@@ -128,6 +143,19 @@ def _decode_data_uri(uri: str) -> str:
         return handle.name
     except Exception as exc:
         raise InputError(f"failed to write data URI payload: {exc}") from exc
+
+
+def _magic_bytes_of(data: bytes) -> Optional[str]:
+    """Return a file extension (e.g. ``.png``) for the given raw bytes."""
+    head = data[:12]
+    if head.startswith(b"RIFF"):
+        return ".webp" if head[8:12] == b"WEBP" else None
+    if head.startswith(b"%PDF"):
+        return ".pdf"
+    for magic, ext in _MAGIC_IMAGE_TYPES.items():
+        if head.startswith(magic):
+            return ext
+    return None
 
 
 def _download(url: str) -> str:
