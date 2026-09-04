@@ -168,7 +168,6 @@ class TextRequest(BaseModel):
     image_b64: Optional[str] = None
     image_data: Optional[str] = None
     engine: Optional[str] = None
-    engines: Optional[List[str]] = None
     max_pages: Optional[int] = None
     dpi: int = 200
     format: str = "json"
@@ -231,8 +230,9 @@ def _apply_inline_overrides(config: Config, body: TextRequest) -> Config:
     """Apply per-request ``engine``/``model``/``prompt``/``strategy``/``strategy_name``.
 
     This lets a caller pick a different model or a named preset
-    (``local``/``vl``/``fallback``/``quality``) for a single request without a
-    global ``POST /config``, e.g. ``{"image_url": "...", "strategy_name": "quality"}``.
+    (``local``/``vl``/``seq*``/``bestof*``/``fallback``/``quality``) for a single
+    request without a global ``POST /config``, e.g. ``{"image_url": "...",
+    "strategy_name": "bestof"}``.
 
     Returns a new :class:`Config`; the input is never mutated (one-shot).
     """
@@ -421,7 +421,6 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     async def ocr_upload(
         file: UploadFile = File(..., description="图片或 PDF"),
         engine: Optional[str] = Form(None),
-        engines: Optional[str] = Form(None),
         model: Optional[str] = Form(None),
         prompt: Optional[str] = Form(None),
         strategy: Optional[str] = Form(None),
@@ -436,8 +435,9 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
 
         ``strategy`` / ``model`` 等为 JSON 字符串形式的临时配置，优先级高于
         ``/config`` 的运行时覆盖。``strategy_name`` 按命名预设整体切换引擎链
-        （``local`` 仅本地 / ``vl`` 仅大模型 / ``fallback`` 回退链 /
-        ``quality`` 回退链+窜行降级+阅读顺序重排），同样只对本请求生效。
+        （``local`` 仅本地 / ``vl`` 仅 VL / ``seq*`` 顺序回退 /
+        ``bestof*`` 多引擎择优 / ``fallback`` 回退链 / ``quality`` 回退链+窜行降级+
+        阅读顺序重排），同样只对本请求生效。
         """
         out_format = (format or "json").lower()
         if out_format not in VALID_FORMATS:

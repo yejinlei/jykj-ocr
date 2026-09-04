@@ -1097,8 +1097,8 @@ flowchart TD
 | `seq-any` | 同 seq + 窜行降级 | `any`(低置信度或窜行任一) | ✅ | 盖章/倾斜导致 rapidocr 窜行 |
 | `seq-low_conf` | 全部启用引擎 | `low_confidence` | — | 低置信度自动降级 |
 | `seq-line_overlap` | 全部启用引擎 | `line_overlap` | — | 窜行时自动降级 |
-| `fallback` | 同 seq | — | — | legacy 别名 |
-| `quality` | 同 seq-any | — | — | legacy 别名 |
+| `fallback` | 同 seq | `no_text` | — | legacy 别名(回退链) |
+| `quality` | 同 seq-any | `any`(低置信度或窜行任一) | ✅ | legacy 别名(窜行降级+重排) |
 
 **示例**:
 
@@ -1301,6 +1301,86 @@ curl -s -X POST http://localhost:8000/config \
 ```bash
 export JYKJ_OCR_REMOTE_ENGINES="paddlecloud,acme-vl"   # 逗号分隔,小写
 ```
+
+### 9.6 三种调用方式
+
+所有预设都同时支持 CLI / HTTP / Python 三种入口,语义完全一致,可自由切换:
+
+| 动作 | CLI | HTTP(multipart) | HTTP(JSON) | Python API |
+|------|-----|------------------|------------|------------|
+| 通用生产(seq,默认) | `ocr img.png` | `POST /ocr -F file=@img.png` | — | `ocr("img.png")` |
+| 仅本地引擎 | `ocr --strategy-name local` | `POST /ocr/local -F file=@img.png` | — | `ocr("img.png", strategy_name="local")` |
+| 窜行降级+重排(quality) | `ocr --strategy-name quality` | `POST /ocr/quality -F file=@img.png` | — | `ocr("img.png", strategy_name="quality")` |
+| 多引擎择优(smart) | `ocr --strategy-name bestof` | `POST /ocr/bestof -F file=@img.png` | — | `ocr("img.png", strategy_name="bestof")` |
+| 按置信度择优 | `ocr --strategy-name bestof-confidence` | `POST /ocr/bestof-confidence -F file=@img.png` | — | `ocr("img.png", strategy_name="bestof-confidence")` |
+| 冒号语法别名 | — | `POST /ocr/bestof:fluency -F file=@img.png` | `POST /ocr/bestof:fluency/text` | `ocr("img.png", strategy_name="bestof:fluency")` |
+| 纯 URL 输入 | — | — | `POST /ocr/text -d '{"image_url":"..."}'` | `ocr("http://.../img.png")` |
+| base64 输入 | — | — | `POST /ocr/text -d '{"image_b64":"..."}'` | `ocr("data:...;base64,...")` |
+
+> **CLI 限制**:`--strategy-name` 参数只支持预设名本身(如 `bestof` / `quality`),
+> **不支持** `bestof:<mode>` 冒号语法(argparse `choices` 的固有限制)。冒号语法
+> 仅在 HTTP 和 Python API 下可用。
+>
+> **JSON body 三选一**:`image_url` / `image_b64` / `image_data` 只能传一个,
+> 传零个或传多个都会返回 HTTP 400。
+
+**路由即策略**:所有 `/ocr/{preset}` 路径自动识别 preset——
+- preset 匹配已注册引擎名(`rapidocr`/`siliconflow`/`multimodal`):等价于强制单引擎
+- preset 匹配策略预设名(`local`/`vl`/`seq*`/`bestof*`/`fallback`/`quality`/`bestof:<mode>`):等价于 `strategy_name=preset`
+- 其他值:HTTP 404 并列出所有可用引擎和预设名
+
+**同一张图,从 CLI 到 HTTP 到 Python 的完整链路示例**:
+
+```bash
+# CLI:窜行降级 + 阅读顺序重排
+python -m jykj_ocr stamp.png --strategy-name quality --format json
+
+# HTTP multipart:等效行为
+curl -s http://localhost:8000/ocr/quality \
+  -F "file=@stamp.png" -F "format=json"
+
+# HTTP JSON(纯 URL 输入):指定引擎 + 模型
+curl -s http://localhost:8000/ocr/text \
+  -H "Content-Type: application/json" \
+  -d '{"image_url":"https://example.com/scan.png",
+       "engine":"siliconflow",
+       "model":"PaddlePaddle/PaddleOCR-VL-1.5"}'
+```
+
+```python
+import jykj_ocr
+
+# 等价于 CLI 命令
+results = jykj_ocr.ocr("stamp.png", strategy_name="quality")
+print(results[0].text)
+
+# 只拿纯文本(跳过 JSON 结构)
+text = jykj_ocr.ocr_to_text("scan.png", engine="rapidocr")
+
+# 指定 PDF 前 10 页,300 DPI
+results = jykj_ocr.ocr("report.pdf", engine="rapidocr", max_pages=10, dpi=300)
+```
+
+### 9.7 使用场景速查
+
+| 你的场景 | 推荐预设 | 为什么 |
+|----------|----------|--------|
+| 离线 / 隐私敏感 / 批量低成本 | `local` | 只用本地 rapidocr,不调用任何外部服务 |
+| 版面复杂 / 手写 / 表格 | `vl` | 让远程 VL 大模型直接处理 |
+| 通用生产(引擎 A 大多数时候够用) | `seq`(默认) / `fallback` | 引擎 A 失败才降级,快且稳 |
+| 盖章 / 倾斜导致 rapidocr 窜行 | `quality` / `seq-any` | 窜行自动降级 + 按坐标重建阅读顺序 |
+| 低置信度自动降级 | `seq-low_conf` | 平均置信度低于阈值才切换引擎 |
+| 只关心窜行(不在乎置信度) | `seq-line_overlap` | 仅检测窜行触发降级 |
+| 追求综合最优(推荐首选) | `bestof` / `bestof-smart` | 所有引擎各跑一次,用置信度+流畅度+窜行惩罚综合打分 |
+| 追求速度 | `bestof-fastest` | 取耗时最低的引擎结果 |
+| 追求逐字准确 | `bestof-confidence` | 取平均置信度最高的结果 |
+| 追求完整性,不漏字 | `bestof-longest` | 取文本最长的结果 |
+| 追求"读起来像人话" | `bestof-fluency` | 用短语密度+CJK 标点−单字碎片惩罚选最自然的结果 |
+
+> **对兰亭序实测**:rapidocr 输出 166 个单字(碎片化),siliconflow 输出完整古文
+> 句子——`bestof-smart`/`bestof-fluency` 能正确选中硅基流动。如果只关心"读起来
+> 像人话",优先 `bestof-fluency`;如果对速度敏感,`seq`(默认)或 `seq-low_conf`
+> 往往更快。
 
 ---
 
