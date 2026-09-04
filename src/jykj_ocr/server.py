@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import Config, EngineConfig, from_mapping, load_config, normalise_engine
 from .engine import base as engine_base
@@ -188,7 +188,9 @@ class TextRequest(BaseModel):
     model: Optional[str] = None
     prompt: Optional[str] = None
     strategy: Optional[Dict[str, Any]] = None
-    strategy_name: Optional[str] = None
+    strategy_name: Optional[str] = Field(
+        None, description=f"一次性策略预设:{_PRESET_EXAMPLES}"
+    )
 
     def source(self) -> str:
         """Return the resolved input source.
@@ -506,7 +508,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         prompt: Optional[str] = Form(None),
         strategy: Optional[str] = Form(None),
         strategy_name: Optional[str] = Form(
-            None, description="一次性策略预设：local / vl / fallback / quality"
+            None, description=f"一次性策略预设：{_PRESET_EXAMPLES}"
         ),
         max_pages: Optional[int] = Form(None),
         dpi: int = Form(200),
