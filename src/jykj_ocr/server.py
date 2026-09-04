@@ -179,16 +179,35 @@ class TextRequest(BaseModel):
     :func:`engine.inputs.load`, so all three are handled uniformly.
     """
 
-    image_url: Optional[str] = None
-    image_b64: Optional[str] = None
-    image_data: Optional[str] = None
-    engine: Optional[str] = None
-    max_pages: Optional[int] = None
-    dpi: int = 200
-    format: str = "json"
-    model: Optional[str] = None
-    prompt: Optional[str] = None
-    strategy: Optional[Dict[str, Any]] = None
+    image_url: Optional[str] = Field(
+        None,
+        description=(
+            "图片 URL(本地路径 / http(s):// URL)。与 image_b64、image_data 三选一,"
+            "必须恰好传一个。例:`\"https://example.com/scan.png\"` 或 `\"/tmp/img.jpg\"`。"
+        ),
+        example="https://example.com/scan.png",
+    )
+    image_b64: Optional[str] = Field(
+        None,
+        description=(
+            "base64 编码的图片字节(不含 `data:` 前缀)。服务端自动补 "
+            "`data:image/octet-stream;base64,` 前缀。例:`\"iVBORw0KGgoAAAANSUhEUg...\"`。"
+        ),
+    )
+    image_data: Optional[str] = Field(
+        None,
+        description=(
+            "完整 data URI(含 `data:image/...;base64,` 前缀),如浏览器 `<img src>` 直传。"
+            "例:`\"data:image/png;base64,iVBORw0KGgo...\"`。"
+        ),
+    )
+    engine: Optional[str] = Field(None, description="强制单引擎(如 rapidocr / siliconflow),覆盖 strategy")
+    max_pages: Optional[int] = Field(None, description="PDF 页数上限")
+    dpi: int = Field(200, description="PDF 渲染 DPI")
+    format: str = Field("json", description="输出格式:json / text / markdown")
+    model: Optional[str] = Field(None, description="覆盖远程引擎的 model 名")
+    prompt: Optional[str] = Field(None, description="覆盖远程引擎的 prompt")
+    strategy: Optional[Dict[str, Any]] = Field(None, description="临时策略对象(合并进 config.strategy)")
     strategy_name: Optional[str] = Field(
         None, description=f"一次性策略预设:{_PRESET_EXAMPLES}"
     )
@@ -704,10 +723,51 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
                   "与 /ocr/text 同义,body 三选一(image_url / image_b64 / image_data);"
                   "preset 路径参数自动识别:匹配引擎名等价于强制单引擎,匹配策略预设名"
                   "等价于 strategy_name=preset;bestof:<mode> 冒号语法也支持。"
-                  "其他值返回 404 并列出全部可用选项。"
+                  "其他值返回 404 并列出全部可用选项。\n\n"
+                  "示例(用 image_url 传网络图片):\n"
+                  "```json\n"
+                  "{ \"image_url\": \"https://example.com/scan.png\", \"format\": \"json\" }\n"
+                  "```\n"
+                  "示例(用 image_b64 传 base64 图片):\n"
+                  "```json\n"
+                  "{ \"image_b64\": \"iVBORw0KGgoAAAANSUhEUg...\" }\n"
+                  "```"
               ),
               responses=_ERROR_RESPONSES | {
                   200: {"description": "识别成功,统一结构 {pages, text, engine, page_count}"}
+              },
+              openapi_extra={
+                  "requestBody": {
+                      "required": True,
+                      "content": {
+                          "application/json": {
+                              "schema": {"$ref": "#/components/schemas/TextRequest"},
+                              "examples": {
+                                  "image_url": {
+                                      "summary": "按图片 URL 识别",
+                                      "value": {
+                                          "image_url": "https://example.com/scan.png",
+                                          "format": "json",
+                                      },
+                                  },
+                                  "image_b64": {
+                                      "summary": "按 base64 图片识别",
+                                      "value": {
+                                          "image_b64": "iVBORw0KGgoAAAANSUhEUg...",
+                                          "format": "json",
+                                      },
+                                  },
+                                  "image_data": {
+                                      "summary": "按 data URI 识别",
+                                      "value": {
+                                          "image_data": "data:image/png;base64,iVBORw0KGgo...",
+                                          "format": "json",
+                                      },
+                                  },
+                              },
+                          }
+                      },
+                  }
               })
     async def ocr_preset_url(preset: str, body: TextRequest) -> Any:
         """路由即策略的 JSON 接口:``POST /ocr/{preset}/text``。
