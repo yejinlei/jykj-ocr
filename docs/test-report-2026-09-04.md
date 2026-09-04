@@ -29,6 +29,35 @@
 
 修复 commit:`4df31df fix: BestofEngine.recognise 写入 elapsed_ms(wall-clock)`
 
+### 1.1 seq 家族同型 bug(同日发现)
+
+`server._pipeline` 只在**强制单引擎**时套 `TimedOCR`——走 `build_pipeline`
+的策略预设(`seq` / `seq-any` / `seq-low_conf` / `seq-line_overlap` /
+`local` / `vl` / `quality`)直接返回裸 `StrategyEngine`,也不写
+`elapsed_ms`。用兰亭序复现:
+
+| 端点 | 客户端 wall | server_elapsed |
+|---|---:|---:|
+| `/ocr/seq/text` | 9642 ms | **0 ms** ❌ |
+| `/ocr/seq-any/text` | 21145 ms | **0 ms** ❌ |
+| `/ocr/seq-low_conf/text` | 10033 ms | **0 ms** ❌ |
+| `/ocr/seq-line_overlap/text` | 20311 ms | **0 ms** ❌ |
+| `/ocr/local/text` | 9889 ms | **0 ms** ❌ |
+| `/ocr/vl/text` | 2274 ms | **0 ms** ❌ |
+| `/ocr/quality/text` | 20488 ms | **0 ms** ❌ |
+
+修复 `StrategyEngine.recognise`(与 `BestofEngine` 对称):用
+`time.perf_counter()` 包住整个 attempts 循环,winner / best 返回前写入
+`elapsed_ms`——覆盖所有 attempts(含被 reject 的重试)。
+
+修复 commit:`28aaaa2 fix: StrategyEngine.recognise 写入 elapsed_ms(seq 家族 elapsed_ms=0 bug)`
+
+新增回归测试:
+- `TestStrategyEngine::test_accepted_result_elapsed_ms_reflects_wall_clock`
+  覆盖 3 种 retry_check 组合
+- `TestStrategyEngine::test_rejected_attempts_include_retry_time`
+  两次 40ms 尝试(elapsed_ms ≥ 60ms),验证重试时间被计入
+
 ---
 
 ## 2. 兰亭序 OCR 结果对比
@@ -110,6 +139,49 @@
 2. **top-level OpenAPI `tags` 字段缺失**——FastAPI ≤ 0.120 已知行为,
    operation 级 tags 都在,Swagger UI 侧栏分组正常渲染,不需要额外处理。
 3. **`docs/index.html` 里 "142 passed" 未同步为 143**——纯文档同步。
+
+---
+
+## 7. cascade 家族 + 请求级旋钮(2026-09-04 晚)
+
+`seq*` 之前只有一个 retry 判定维度;`bestof*` 之前只有一个评分维度;
+同一引擎被 reject 后会**在同引擎重试**,不降级。此次补齐:
+
+**新增预设**(`STRATEGY_PRESETS` 14 → 17):
+- `cascade` = `seq` + `max_retries=0`(不重试同引擎)
+- `cascade-low_conf` = `cascade` + `retry_mode=low_confidence`
+- `cascade-line_overlap` = `cascade` + `retry_mode=line_overlap`
+
+**请求级旋钮**(所有 `/ocr/{preset}` 与 `/ocr/{preset}/text` 端点):
+- `retry_mode`:no_text / low_confidence / line_overlap / any / none
+- `score_mode`:smart / fastest / highest_confidence / longest / fluency
+- `max_retries`:≥0,0 等价于 cascade
+
+旋钮在 `apply_strategy_preset` 之后应用,永远覆盖预设默认。无效值走 400;
+`max_retries=-1` 由 Pydantic `ge=0` 拦成 422。
+
+**CLI 同步**:`--strategy-name` 的 `choices` 从硬编码 14 元组改为
+`STRATEGY_PRESETS`,自动跟随预设家族增长。
+
+---
+
+## 8. 远程模型实测(2026-09-04 深夜,本地服务 127.0.0.1:8765)
+
+用 `.env` 里的 `JYKJ_OCR_SILICONFLOW_MODEL` 切换 siliconflow 的模型,同图对比:
+
+| Model | HTTP | elapsed | text_len | 备注 |
+|---|:---:|---:|---:|---|
+| `PaddlePaddle/PaddleOCR-VL-1.5`(默认) | 200 | 1.29s | 324 | 兰亭序全文,首尾干净 |
+| `Qwen/Qwen3-VL-32B-Instruct`(对话模型) | 200 | 1.48s | 4 | 短文本 OK,不做 OCR |
+| `moonshotai/Kimi-K2.7-Code`(代码模型) | 200 | **157s** | 372 | 输出前缀 "墨趣" 系幻觉,40× 慢 |
+
+**结论**:通用多模态 LLM(Kimi/Qwen3)能过,但**做 OCR 不划算**——
+推理思考 tokens 撑爆延迟,Kimi-K2.7-Code 还带 reasoning_content(前 300
+字里出现 "墨趣" 这种非图像文字)。OCR 场景默认 `PaddleOCR-VL-1.5` 仍最佳,
+JYKJ_OCR_SILICONFLOW_MODEL 保留作 A/B 实验与对话式视觉任务用。
+
+`.env` 加了 `JYKJ_OCR_SILICONFLOW_MODEL=moonshotai/Kimi-K2.7-Code`
+一行方便切换;默认配置仍走 PaddleOCR-VL-1.5。
 
 ---
 

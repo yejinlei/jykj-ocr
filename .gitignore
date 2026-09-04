@@ -62,3 +62,6 @@ diag_out.json
 # Archify review evidence (delivered artifacts stay, temp evidence does not)
 docs/arch/_*.json
 docs/arch/*.visual-check.*
+
+# zvec-grep workspace index (local retrieval cache)
+.zvec-grep/

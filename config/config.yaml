@@ -49,7 +49,9 @@ engines:
 
   # 硅基流动多模态 OCR 大模型
   - name: siliconflow
-    model: PaddlePaddle/PaddleOCR-VL-1.5
+    # model 留空：siliconflow 默认 PaddlePaddle/PaddleOCR-VL-1.5（见 config.py
+    # EngineConfig.resolved_model）。要换其他视觉模型（Qwen3-VL / Kimi-K2.7-Code
+    # 等），设环境变量 JYKJ_OCR_SILICONFLOW_MODEL 或 --model。
     base_url: https://api.siliconflow.cn/v1
     # api_key 建议用环境变量 SILICONFLOW_API_KEY 提供
     temperature: 0.0

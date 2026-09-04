@@ -25,6 +25,32 @@ SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
 #: Prefix for the ``JYKJ_OCR_*`` environment variables.
 _ENV_PREFIX = "JYKJ_OCR"
 
+
+def load_dotenv(path: str = ".env") -> None:
+    """Best-effort ``.env`` loader (stdlib only).
+
+    Existing env vars always win so an operator's explicit export is never
+    overwritten. Both the CLI entrypoint and :func:`jykj_ocr.server.create_app`
+    call this — uvicorn loads ``server:app`` directly, skipping the CLI.
+    """
+    import os as _os
+
+    if not _os.path.isfile(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in _os.environ:
+                    _os.environ[key] = value
+    except OSError:
+        return
+
 #: Aliases accepted for ``engines[].name`` / ``--engine``.
 ENGINE_ALIASES: Dict[str, str] = {
     "rapid": "rapidocr",
@@ -90,9 +116,20 @@ class EngineConfig:
 
     @property
     def resolved_model(self) -> str:
-        return self.model or (
-            "PaddlePaddle/PaddleOCR-VL-1.5" if self.name == "siliconflow" else ""
-        )
+        """Resolve the model name, checking env vars first.
+
+        Order: explicit config -> ``JYKJ_OCR_<NAME>_MODEL`` -> engine-specific
+        default (siliconflow). Mirrors :attr:`resolved_api_key` so an operator
+        can swap the model per deployment (e.g. ``JYKJ_OCR_SILICONFLOW_MODEL=
+        moonshotai/Kimi-K2.7-Code``) without editing the config file.
+        """
+        if self.model:
+            return self.model
+        upper = self.name.upper().replace("-", "_").replace(".", "_")
+        env_model = os.getenv(f"{_ENV_PREFIX}_{upper}_MODEL")
+        if env_model:
+            return env_model
+        return "PaddlePaddle/PaddleOCR-VL-1.5" if self.name == "siliconflow" else ""
 
     @property
     def resolved_api_key(self) -> str:

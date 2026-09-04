@@ -311,6 +311,57 @@ class TestSeqPresets:
         assert pipeline.retry_check(None, low) is True
 
 
+class TestCascadePresets:
+    """``cascade*`` family — retry_mode + max_retries=0."""
+
+    def test_cascade_sets_max_retries_zero(self):
+        cfg = apply_strategy_preset(_config(), "cascade")
+        assert cfg.strategy["max_retries"] == 0
+        assert cfg.strategy["retry_mode"] == "no_text"
+        assert cfg.strategy["name"] == "cascade"
+
+    def test_cascade_low_conf(self):
+        cfg = apply_strategy_preset(_config(), "cascade-low_conf")
+        assert cfg.strategy["max_retries"] == 0
+        assert cfg.strategy["retry_mode"] == "low_confidence"
+
+    def test_cascade_line_overlap(self):
+        cfg = apply_strategy_preset(_config(), "cascade-line_overlap")
+        assert cfg.strategy["max_retries"] == 0
+        assert cfg.strategy["retry_mode"] == "line_overlap"
+
+    def test_cascade_builds_strategy_engine_with_zero_retries(self):
+        cfg = apply_strategy_preset(_config(), "cascade")
+        pipeline = build_pipeline(cfg)
+        assert isinstance(pipeline, StrategyEngine)
+        assert pipeline.retries == 0
+
+    def test_seq_retains_configured_retries(self):
+        """Cascade uses 0, but seq-family leaves the config value alone."""
+        cfg = apply_strategy_preset(_config(), "seq")
+        pipeline = build_pipeline(cfg)
+        assert isinstance(pipeline, StrategyEngine)
+        # _config() sets retry.max_retries = 1, seq must not override it.
+        assert pipeline.retries == 1
+
+    def test_all_cascade_presets_registered(self):
+        from jykj_ocr.engine.registry import STRATEGY_PRESETS
+        for name in ("cascade", "cascade-low_conf", "cascade-line_overlap"):
+            assert name in STRATEGY_PRESETS
+
+    def test_describe_presets_includes_cascade(self):
+        from jykj_ocr.engine.registry import describe_presets
+        d = describe_presets()
+        assert "cascade" in d
+        assert d["cascade"]["max_retries"] == 0
+        assert d["cascade"]["retry_mode"] == "no_text"
+        assert d["seq"]["max_retries"] is None
+
+    def test_cascade_unknown_variant_rejected(self):
+        with pytest.raises(ValueError):
+            apply_strategy_preset(_config(), "cascade-unknown")
+
+
 # ---------------------------------------------------------------------------
 # bestof* presets
 # ---------------------------------------------------------------------------

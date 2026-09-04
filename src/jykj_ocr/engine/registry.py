@@ -43,13 +43,23 @@ def remote_engines() -> tuple:
 #: Named strategy presets understood by ``strategy.name`` / ``strategy_name=``.
 #
 # ``seq*`` presets all use :class:`StrategyEngine` (first-acceptable-wins, in
-# engine order). They differ only by retry predicate and whether the final
-# result is re-ordered by position::
+# engine order). They differ only by retry predicate, ``max_retries`` and
+# whether the final result is re-ordered by position::
 #
-#   seq                 retry_mode=no_text, reorder=off          (default)
-#   seq-any             retry_mode=any,     reorder=on           (quality)
-#   seq-low_conf        retry_mode=low_confidence, reorder=off
-#   seq-line_overlap    retry_mode=line_overlap, reorder=off
+#   seq                 retry_mode=no_text,     max_retries=config
+#   seq-any             retry_mode=any,         reorder=on
+#   seq-low_conf        retry_mode=low_confidence
+#   seq-line_overlap    retry_mode=line_overlap
+#
+# ``cascade*`` presets also use :class:`StrategyEngine` but set
+# ``max_retries=0`` — a rejected attempt jumps straight to the next engine
+# instead of retrying the same engine. Use ``cascade*`` when the same
+# engine is unlikely to succeed on a second run (e.g. local OCR returning
+# garbled text won't improve with another pass on the same image)::
+#
+#   cascade              retry_mode=no_text,         max_retries=0
+#   cascade-low_conf     retry_mode=low_confidence,  max_retries=0
+#   cascade-line_overlap retry_mode=line_overlap,    max_retries=0
 #
 # ``bestof*`` presets use :class:`BestofEngine` — every engine runs once and
 # the winner is chosen by a score function; the result is never re-ordered::
@@ -72,6 +82,9 @@ STRATEGY_PRESETS = (
     "seq-any",
     "seq-low_conf",
     "seq-line_overlap",
+    "cascade",
+    "cascade-low_conf",
+    "cascade-line_overlap",
     "bestof",
     "bestof-smart",
     "bestof-fastest",
@@ -83,24 +96,42 @@ STRATEGY_PRESETS = (
     "quality",
 )
 
-#: (retry_mode, reorder_lines, is_bestof, bestof_score_mode)
+#: Allowed ``retry_mode`` values. ``resolve_retry_check`` treats anything
+#: outside this list as ``no_text`` — reject the request here instead.
+VALID_RETRY_MODES = frozenset(
+    ("no_text", "low_confidence", "line_overlap", "any", "none")
+)
+
+#: Allowed ``bestof_score_mode`` values; mirrors :func:`resolve_bestof_score`.
+VALID_SCORE_MODES = frozenset(
+    ("smart", "fastest", "highest_confidence", "longest", "fluency")
+)
+
+#: (retry_mode, reorder_lines, is_bestof, bestof_score_mode, max_retries)
+#:
+#: ``max_retries=None`` means "leave the configured value alone" — this is
+#: what ``seq*`` / ``bestof*`` presets do. An explicit integer overrides the
+#: config value; ``cascade*`` uses ``0`` to skip same-engine retries.
 _SEQ_PRESETS = {
-    "local": ("no_text", False, False, None),
-    "vl": ("no_text", False, False, None),
-    "seq": ("no_text", False, False, None),
-    "seq-any": ("any", True, False, None),
-    "seq-low_conf": ("low_confidence", False, False, None),
-    "seq-line_overlap": ("line_overlap", False, False, None),
+    "local": ("no_text", False, False, None, None),
+    "vl": ("no_text", False, False, None, None),
+    "seq": ("no_text", False, False, None, None),
+    "seq-any": ("any", True, False, None, None),
+    "seq-low_conf": ("low_confidence", False, False, None, None),
+    "seq-line_overlap": ("line_overlap", False, False, None, None),
+    "cascade": ("no_text", False, False, None, 0),
+    "cascade-low_conf": ("low_confidence", False, False, None, 0),
+    "cascade-line_overlap": ("line_overlap", False, False, None, 0),
     # legacy aliases
-    "fallback": ("no_text", False, False, None),
-    "quality": ("any", True, False, None),
+    "fallback": ("no_text", False, False, None, None),
+    "quality": ("any", True, False, None, None),
     # bestof presets
-    "bestof": (None, False, True, "smart"),
-    "bestof-smart": (None, False, True, "smart"),
-    "bestof-fastest": (None, False, True, "fastest"),
-    "bestof-confidence": (None, False, True, "highest_confidence"),
-    "bestof-longest": (None, False, True, "longest"),
-    "bestof-fluency": (None, False, True, "fluency"),
+    "bestof": (None, False, True, "smart", None),
+    "bestof-smart": (None, False, True, "smart", None),
+    "bestof-fastest": (None, False, True, "fastest", None),
+    "bestof-confidence": (None, False, True, "highest_confidence", None),
+    "bestof-longest": (None, False, True, "longest", None),
+    "bestof-fluency": (None, False, True, "fluency", None),
 }
 
 
@@ -108,16 +139,17 @@ def describe_presets() -> Dict[str, Dict[str, Any]]:
     """Structured description of every named strategy preset.
 
     Consumed by ``GET /presets`` so callers can discover the full family
-    (including ``bestof-fluency``, ``bestof-line_overlap``…) instead of
-    reading a flat string of names in the ``strategy_name`` description.
+    (including ``bestof-fluency``, ``cascade*``…) instead of reading a flat
+    string of names in the ``strategy_name`` description.
     """
     out: Dict[str, Dict[str, Any]] = {}
-    for name, (retry_mode, reorder, is_bestof, score_mode) in _SEQ_PRESETS.items():
+    for name, (retry_mode, reorder, is_bestof, score_mode, max_retries) in _SEQ_PRESETS.items():
         out[name] = {
             "retry_mode": retry_mode,
             "reorder_lines": reorder,
             "is_bestof": is_bestof,
             "score_mode": score_mode if is_bestof else None,
+            "max_retries": max_retries,
             "engine_scope": (
                 "remote_vl_only" if name == "vl"
                 else "local_only" if name == "local"
@@ -241,7 +273,7 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
     strategy = dict(cfg.strategy)
     output = dict(cfg.output)
 
-    retry_mode, reorder_lines, is_bestof, _preset_bestof_mode = _SEQ_PRESETS[key]
+    retry_mode, reorder_lines, is_bestof, _preset_bestof_mode, preset_max_retries = _SEQ_PRESETS[key]
     if is_bestof and bestof_score_mode is None:
         bestof_score_mode = _preset_bestof_mode
 
@@ -272,6 +304,15 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
         strategy["retry_mode"] = retry_mode
     else:
         strategy.pop("retry_mode", None)
+
+    # Write max_retries when the preset dictates a specific value (e.g.
+    # ``cascade*`` = 0). Presets that leave it alone use ``None`` and keep
+    # whatever the config already had — this is how ``seq*`` retains its
+    # configured retries.
+    if preset_max_retries is not None:
+        strategy["max_retries"] = preset_max_retries
+    else:
+        strategy.pop("max_retries", None)
 
     # Bestof presets mark themselves so build_pipeline knows to assemble a
     # :class:`BestofEngine` instead of :class:`StrategyEngine`.
@@ -328,6 +369,8 @@ def build_pipeline(
 
 __all__ = [
     "STRATEGY_PRESETS",
+    "VALID_RETRY_MODES",
+    "VALID_SCORE_MODES",
     "StrategyEngine",
     "apply_strategy_preset",
     "build_engine",
