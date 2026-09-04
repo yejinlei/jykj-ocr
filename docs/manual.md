@@ -550,6 +550,7 @@ JYKJ_OCR_PORT=8000 python -m uvicorn jykj_ocr.server:app --host 0.0.0.0
 | `DELETE` | `/config` | — | ❌ 单独结构 |
 | `GET` | `/health` | — | ❌ `{status, engines}` |
 | `GET` | `/engines` | — | ❌ `{engines, configured}` |
+| `GET` | `/presets` | — | ❌ `{presets}`(见 §9.1) |
 
 **四个 OCR 端点返回结构完全一致**(`{pages, text, engine, page_count}`)。只有 `format=text`/`markdown` 时退化为纯文本。`{preset}` 路径参数见 §9.1(命名策略预设)。
 
