@@ -41,6 +41,7 @@ from .engine.registry import (
     build_engine,
     build_pipeline,
     build_strategy,
+    describe_presets,
     engines_from_config,
     remote_engines,
     resolve_retry_check,
@@ -426,6 +427,18 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     async def engines() -> Dict[str, Any]:
         config = state.snapshot()
         return {"engines": describe_engines(), "configured": [e.name for e in config.engines]}
+
+    @app.get("/presets", tags=["配置与状态"],
+             summary="可用策略预设",
+             description=(
+                 "列出全部命名策略预设(含评分模式、重试判定、引擎范围),与 CLI "
+                 "`--strategy-name`、HTTP `strategy_name` 参数、`/ocr/{preset}` 路由"
+                 "一一对应。14 个显式预设 + `bestof:<mode>` 冒号语法别名,共 15 项。"
+             ),
+             responses={200: {"description": "预设清单(name → 元数据)"}})
+    async def presets() -> Dict[str, Any]:
+        return {"presets": describe_presets()}
+
 
     @app.get("/config", tags=["配置与状态"],
              summary="当前生效配置",
