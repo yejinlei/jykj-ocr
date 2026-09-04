@@ -376,6 +376,89 @@ class _FakeEngine:
         return result
 
 
+# ---------------------------------------------------------------------------
+# StrategyEngine behaviour
+# ---------------------------------------------------------------------------
+
+class TestStrategyEngine:
+    def test_accepted_result_elapsed_ms_reflects_wall_clock(self):
+        """StrategyEngine must stamp the winner with wall-clock elapsed_ms.
+
+        Before this fix, seq-family presets (seq / seq-any / seq-low_conf /
+        seq-line_overlap / local / vl / quality) all returned
+        ``elapsed_ms=0`` in HTTP responses. ``server._pipeline`` only wrapped
+        a *forced single engine* in ``TimedOCR`` — the ``build_pipeline``
+        path returned a bare ``StrategyEngine`` that never touched
+        ``elapsed_ms``. ``BestofEngine`` got the same fix first.
+        """
+        import time
+
+        class SleepyEngine:
+            def __init__(self, name, text, sleep_s):
+                self.name = name
+                self._text = text
+                self._sleep_s = sleep_s
+                self._config = None
+
+            @property
+            def config(self):
+                return self._config
+
+            def recognise(self, image):
+                time.sleep(self._sleep_s)
+                result = _result(self._text, confidence=0.9)
+                result.engine = self.name
+                return result
+
+        engines = [SleepyEngine("sleepy", "ok", 0.06)]
+        for retry_check in (
+            None,
+            combine_predicates(should_retry_line_overlap),
+            should_retry_line_overlap,
+        ):
+            pipeline = StrategyEngine(engines, retry_check=retry_check)
+            winner = pipeline.recognise(None)
+            assert winner.elapsed_ms >= 50, (
+                f"retry_check={retry_check}: elapsed_ms={winner.elapsed_ms}"
+            )
+
+    def test_rejected_attempts_include_retry_time(self):
+        """When the first engine is rejected and retries, elapsed_ms must
+        cover the total wall-clock of all attempts, not just the winner."""
+        import time
+
+        class SlowRejectThenGood:
+            """First call returns an empty result (retryable), second returns
+            a clean one after a longer sleep — retries must show up in
+            elapsed_ms."""
+            name = "slow"
+            config = None
+
+            def __init__(self):
+                self.calls = 0
+
+            def recognise(self, image):
+                self.calls += 1
+                time.sleep(0.04)
+                if self.calls == 1:
+                    # Empty result — `ok=False` and no regions — trips
+                    # should_retry_line_overlap so a retry actually fires.
+                    return OCRResult(text="", engine=self.name, regions=[])
+                return _result("finally ok", confidence=0.99)
+
+        pipeline = StrategyEngine(
+            [SlowRejectThenGood()],
+            retries=1,
+            retry_check=should_retry_line_overlap,
+        )
+        winner = pipeline.recognise(None)
+        assert winner.text == "finally ok"
+        # Two 40ms sleeps = 80ms; allow clock jitter down to 60ms.
+        assert winner.elapsed_ms >= 60, (
+            f"expected ≥ 60ms for two retries, got {winner.elapsed_ms}"
+        )
+
+
 class TestBestofEngine:
     def _r(self, text, confidence=0.9, elapsed_ms=100):
         result = _result(text, confidence=confidence)
