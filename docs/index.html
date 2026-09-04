@@ -223,7 +223,7 @@ python -m jykj_ocr serve --port 8000</code>
       <li><code>/ocr/{preset}</code> 支持 <code>retry_mode</code> / <code>score_mode</code> / <code>max_retries</code> 三旋钮,单次请求覆盖预设默认</li>
       <li><code>cascade*</code> 家族:被 reject 的尝试立刻降级下一引擎,不重试同一引擎</li>
       <li>所有引擎统一走 <code>BaseEngine.recognise</code> 的墙钟超时(rapidocr 与远程),默认 120s,可用 <code>EngineConfig.timeout</code> 覆盖,<code>timeout&lt;=0</code> 关闭</li>
-      <li>pytest 离线测试基线 171 passed</li>
+      <li>pytest 离线测试基线 173 passed</li>
       <li>GET /config 实测 <code>key_leaked=False</code></li>
     </ul>
   </main>
