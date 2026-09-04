@@ -57,11 +57,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--strategy-name",
-        choices=("local", "vl", "fallback", "quality"),
+        choices=(
+            "local", "vl",
+            "seq", "seq-any", "seq-low_conf", "seq-line_overlap",
+            "bestof", "bestof-smart", "bestof-fastest",
+            "bestof-confidence", "bestof-longest", "bestof-fluency",
+            "fallback", "quality",
+        ),
         help=(
             "按命名预设整体切换策略（仅本次运行生效）："
-            "local 仅本地引擎 / vl 仅 VL 大模型 / fallback 回退链 / "
-            "quality 回退链+窜行降级+阅读顺序重排"
+            "local/vl 仅本地/仅 VL;seq* 顺序回退;bestof* 多引擎择优"
         ),
     )
     parser.add_argument(

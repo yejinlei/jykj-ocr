@@ -51,6 +51,7 @@ CLI、Python API 与 FastAPI HTTP 接口。
 | `bestof-fastest` | 耗时最低 |
 | `bestof-confidence` | 平均置信度最高 |
 | `bestof-longest` | 文本最长 |
+| `bestof-fluency` | 语义流畅度(短语密度 + CJK 标点 − 单字碎片惩罚) |
 | `bestof:<mode>` | 等价于 `bestof-mode` |
 
 `bestof` 比 `seq*` 慢(所有引擎都跑),但能拿到所有候选里最好的结果。
@@ -214,6 +215,10 @@ python -m jykj_ocr serve          # 或 JYKJ_OCR_PORT=9000 python -m jykj_ocr se
 | `DELETE` | `/config` | 清除运行时覆盖,回到配置文件状态 |
 | `POST` | `/ocr` | 上传图片/PDF 识别(multipart) |
 | `POST` | `/ocr/text` | 按图片 URL 识别(JSON) |
+| `POST` | `/ocr/{preset}` | 路由即策略:多部件上传(preset=引擎名 或 策略预设名) |
+| `POST` | `/ocr/{preset}/text` | 路由即策略:按图片 URL(JSON) |
+
+四个 OCR 端点返回结构完全一致:`{pages, text, engine, page_count}`;`format=text/markdown` 时退化为纯文本。
 
 **POST /ocr** 示例:
 
@@ -273,7 +278,7 @@ docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
 .venv/Scripts/python -m pytest tests -q     # 全部离线,无真实 API 调用
 ```
 
-120 个用例覆盖:models(边界框/文本区域/置信度保留)、config(别名归一化/YAML/环境变量
+137 个用例覆盖:models(边界框/文本区域/置信度保留)、config(别名归一化/YAML/环境变量
 优先级)、strategy(重试链/谓词)、engines(multimodal 的 OpenAI 响应解析 / rapidocr 的
 1.x 3-tuple 与 1.4.x 2-tuple 返回形态)。
 

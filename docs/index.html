@@ -120,8 +120,8 @@
         <tr><td><code>seq-any</code></td><td>同 seq + 窜行降级</td><td><code>any</code></td><td>✅</td><td>盖章/倾斜导致 rapidocr 窜行</td></tr>
         <tr><td><code>seq-low_conf</code></td><td>全部启用引擎</td><td><code>low_confidence</code></td><td>—</td><td>低置信度自动降级</td></tr>
         <tr><td><code>seq-line_overlap</code></td><td>全部启用引擎</td><td><code>line_overlap</code></td><td>—</td><td>窜行时自动降级</td></tr>
-        <tr><td><code>fallback</code></td><td>同 seq</td><td>—</td><td>—</td><td>legacy 别名(默认)</td></tr>
-        <tr><td><code>quality</code></td><td>同 seq-any</td><td>—</td><td>—</td><td>legacy 别名</td></tr>
+        <tr><td><code>fallback</code></td><td>同 seq</td><td><code>no_text</code></td><td>—</td><td>legacy 别名(回退链)</td></tr>
+        <tr><td><code>quality</code></td><td>同 seq-any</td><td><code>any</code></td><td>✅</td><td>legacy 别名(窜行降级+重排)</td></tr>
       </tbody>
     </table>
 
@@ -149,7 +149,7 @@
       </div>
       <div class="card">
         <h3><span class="dot" style="background:var(--accent)"></span>命名策略预设</h3>
-        <p><code>local</code>/<code>vl</code>/<code>fallback</code>/<code>quality</code> 四套预设,配置固定默认、请求可一次性临时切换;底层支持 <code>line_overlap</code>/<code>any</code> 窜行降级。</p>
+        <p><code>local</code>/<code>vl</code>/<code>seq*</code>/<code>bestof*</code>/<code>fallback</code>/<code>quality</code> 四套预设,配置固定默认、请求可一次性临时切换;底层支持 <code>line_overlap</code>/<code>any</code> 窜行降级与 <code>bestof-fluency</code> 语义流畅度择优。</p>
       </div>
       <div class="card">
         <h3><span class="dot" style="background:var(--green)"></span>引擎可扩展</h3>
