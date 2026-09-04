@@ -17,6 +17,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from .engine import describe_engines
+from .engine.registry import STRATEGY_PRESETS
 
 LOG = logging.getLogger("jykj_ocr.cli")
 
@@ -57,16 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--strategy-name",
-        choices=(
-            "local", "vl",
-            "seq", "seq-any", "seq-low_conf", "seq-line_overlap",
-            "bestof", "bestof-smart", "bestof-fastest",
-            "bestof-confidence", "bestof-longest", "bestof-fluency",
-            "fallback", "quality",
-        ),
+        choices=STRATEGY_PRESETS,
         help=(
             "按命名预设整体切换策略（仅本次运行生效）："
-            "local/vl 仅本地/仅 VL;seq* 顺序回退;bestof* 多引擎择优"
+            "local/vl 仅本地/仅 VL;seq* 顺序回退;cascade* 无重试直接降级;bestof* 多引擎择优"
         ),
     )
     parser.add_argument(

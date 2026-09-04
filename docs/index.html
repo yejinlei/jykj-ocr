@@ -216,11 +216,14 @@ python -m jykj_ocr serve --port 8000</code>
       <li>三引擎在 <code>tests/兰亭序.jpeg</code>(750×1390 中文古文)上全部跑通</li>
       <li>rapidocr 166 区域,置信度 0.97+,离线可用</li>
       <li>siliconflow / multimodal 均返回完整全文</li>
-      <li>四套命名预设(local/vl/seq*/bestof*)在 http://192.168.0.81:8000 实测通过,未知名称返回 400 并列出可选值</li>
-      <li><code>GET /presets</code> 返回全部 14 个预设 + <code>bestof:&lt;mode&gt;</code> 别名,含评分模式/重试判定/引擎范围</li>
+      <li>七类命名预设(local/vl/seq*/cascade*/bestof*)在 http://192.168.0.81:8000 实测通过,未知名称返回 400 并列出可选值</li>
+      <li><code>GET /presets</code> 返回全部 17 个预设 + <code>bestof:&lt;mode&gt;</code> 别名,含评分模式/重试判定/引擎范围/最大重试次数</li>
       <li><code>/docs</code> 全部 10 个操作按"OCR 识别"/"配置与状态"两组分类展示</li>
       <li>便捷路由 <code>/ocr/{preset}</code> / <code>/ocr/{preset}/text</code>(路由即策略)已上线,新引擎/新预设无需改路由</li>
-      <li>pytest 离线测试基线 142 passed</li>
+      <li><code>/ocr/{preset}</code> 支持 <code>retry_mode</code> / <code>score_mode</code> / <code>max_retries</code> 三旋钮,单次请求覆盖预设默认</li>
+      <li><code>cascade*</code> 家族:被 reject 的尝试立刻降级下一引擎,不重试同一引擎</li>
+      <li>所有引擎统一走 <code>BaseEngine.recognise</code> 的墙钟超时(rapidocr 与远程),默认 120s,可用 <code>EngineConfig.timeout</code> 覆盖,<code>timeout&lt;=0</code> 关闭</li>
+      <li>pytest 离线测试基线 171 passed</li>
       <li>GET /config 实测 <code>key_leaked=False</code></li>
     </ul>
   </main>

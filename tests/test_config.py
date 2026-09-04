@@ -68,7 +68,9 @@ class TestEngineConfig:
     def test_multimodal_has_no_default_base_url(self):
         assert EngineConfig(name="multimodal").resolved_base_url == ""
 
-    def test_siliconflow_default_model(self):
+    def test_siliconflow_default_model(self, monkeypatch):
+        """Without any env override, siliconflow resolves to its built-in default."""
+        monkeypatch.delenv("JYKJ_OCR_SILICONFLOW_MODEL", raising=False)
         assert EngineConfig(name="siliconflow").resolved_model == "PaddlePaddle/PaddleOCR-VL-1.5"
 
     def test_explicit_model_wins(self):
@@ -76,6 +78,17 @@ class TestEngineConfig:
             name="siliconflow", model="PaddlePaddle/PaddleOCR-VL-1.5"
         )
         assert cfg.resolved_model == "PaddlePaddle/PaddleOCR-VL-1.5"
+
+    def test_env_model_overrides_default(self, monkeypatch):
+        """``JYKJ_OCR_SILICONFLOW_MODEL`` lets operators swap models per deploy
+        without editing the config file."""
+        monkeypatch.setenv("JYKJ_OCR_SILICONFLOW_MODEL", "moonshotai/Kimi-K2.7-Code")
+        assert EngineConfig(name="siliconflow").resolved_model == "moonshotai/Kimi-K2.7-Code"
+
+    def test_explicit_model_beats_env_model(self, monkeypatch):
+        monkeypatch.setenv("JYKJ_OCR_SILICONFLOW_MODEL", "env-model")
+        cfg = EngineConfig(name="siliconflow", model="explicit-model")
+        assert cfg.resolved_model == "explicit-model"
 
     def test_resolved_api_key_prefers_explicit(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "from-env")

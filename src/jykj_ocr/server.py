@@ -37,6 +37,9 @@ from .engine import base as engine_base
 from .engine import describe_engines
 from .engine.inputs import attach_pil, load as load_source
 from .engine.registry import (
+    STRATEGY_PRESETS,
+    VALID_RETRY_MODES,
+    VALID_SCORE_MODES,
     apply_strategy_preset,
     build_engine,
     build_pipeline,
@@ -45,7 +48,6 @@ from .engine.registry import (
     engines_from_config,
     remote_engines,
     resolve_retry_check,
-    STRATEGY_PRESETS,
 )
 from .models import OCRResult, rebuild_text_from_regions
 from .strategy import StrategyError, TimedOCR
@@ -65,6 +67,7 @@ _ERROR_RESPONSES = {
 
 _PRESET_EXAMPLES = (
     "local, vl, seq, seq-any, seq-low_conf, seq-line_overlap, "
+    "cascade, cascade-low_conf, cascade-line_overlap, "
     "bestof, bestof-smart, bestof-fastest, bestof-confidence, "
     "bestof-longest, bestof-fluency, fallback, quality, bestof:<mode>"
 )
@@ -211,6 +214,28 @@ class TextRequest(BaseModel):
     strategy_name: Optional[str] = Field(
         None, description=f"一次性策略预设:{_PRESET_EXAMPLES}"
     )
+    retry_mode: Optional[str] = Field(
+        None,
+        description=(
+            "覆盖 seq 家族的 retry 判定:no_text / low_confidence / "
+            "line_overlap / any / none。bestof 家族忽略。"
+        ),
+    )
+    score_mode: Optional[str] = Field(
+        None,
+        description=(
+            "覆盖 bestof 家族的评分函数:smart / fastest / "
+            "highest_confidence / longest / fluency。seq 家族忽略。"
+        ),
+    )
+    max_retries: Optional[int] = Field(
+        None,
+        ge=0,
+        description=(
+            "覆盖同引擎重试次数(仅 seq 家族生效)。0 等价于 cascade "
+            "(不重试直接降级到下一引擎),≥1 用第 1 次+该值。"
+        ),
+    )
 
     def source(self) -> str:
         """Return the resolved input source.
@@ -299,6 +324,39 @@ def _apply_inline_overrides(config: Config, body: TextRequest) -> Config:
         strategy = dict(config.strategy, **body.strategy)
         changed = True
 
+    # ``retry_mode`` / ``score_mode`` / ``max_retries`` — per-request
+    # strategy knobs. Each overrides only what it's meant for: retry_mode
+    # touches seq-family retry predicates; score_mode is picked up by
+    # build_pipeline's bestof branch; max_retries applies to StrategyEngine
+    # only. Invalid values return 400 rather than being silently ignored.
+    if body.retry_mode is not None:
+        if body.retry_mode not in VALID_RETRY_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown retry_mode {body.retry_mode!r}; choose one of "
+                    f"{', '.join(sorted(VALID_RETRY_MODES))}"
+                ),
+            )
+        strategy["retry_mode"] = body.retry_mode
+        changed = True
+
+    if body.score_mode is not None:
+        if body.score_mode not in VALID_SCORE_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown score_mode {body.score_mode!r}; choose one of "
+                    f"{', '.join(sorted(VALID_SCORE_MODES))}"
+                ),
+            )
+        strategy["bestof_mode"] = body.score_mode
+        changed = True
+
+    if body.max_retries is not None:
+        strategy["max_retries"] = body.max_retries
+        changed = True
+
     if not changed:
         effective = config
     else:
@@ -316,7 +374,23 @@ def _apply_inline_overrides(config: Config, body: TextRequest) -> Config:
             effective = apply_strategy_preset(effective, body.strategy_name)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        # Knobs re-apply AFTER the preset so an explicit ``retry_mode`` /
+        # ``score_mode`` / ``max_retries`` wins over the preset default.
+        # ``apply_strategy_preset`` returns a fresh deepcopy, so mutating
+        # its ``strategy`` dict here does not leak back to ``config``.
+        if body.retry_mode is not None:
+            effective.strategy["retry_mode"] = body.retry_mode
+        if body.score_mode is not None:
+            effective.strategy["bestof_mode"] = body.score_mode
+        if body.max_retries is not None:
+            effective.strategy["max_retries"] = body.max_retries
     return effective
+
+
+def _load_dotenv_once(path: str = ".env") -> None:
+    from .config import load_dotenv as _loader
+
+    _loader(path)
 
 
 def create_app(config_path: Optional[str] = None) -> FastAPI:
@@ -326,6 +400,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         config_path: Optional config file. When omitted, ``load_config`` honours
             ``JYKJ_OCR_CONFIG`` and then falls back to defaults.
     """
+    _load_dotenv_once()
     state = RuntimeConfig(load_config(config_path))
     app = FastAPI(
         title="jykj_ocr",
@@ -336,9 +411,13 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             "## 策略预设\n\n"
             "一次性 `strategy_name`(不改动服务端配置):`local` / `vl` / "
             "`seq` / `seq-any` / `seq-low_conf` / `seq-line_overlap` / "
+            "`cascade` / `cascade-low_conf` / `cascade-line_overlap` / "
             "`bestof` / `bestof-smart` / `bestof-fastest` / "
             "`bestof-confidence` / `bestof-longest` / `bestof-fluency` / "
             "`fallback` / `quality` / `bestof:<mode>`。\n\n"
+            "策略旋钮(per-request):`retry_mode`(no_text/low_confidence/"
+            "line_overlap/any/none)、`score_mode`(smart/fastest/"
+            "highest_confidence/longest/fluency)、`max_retries`(0 等价于 cascade)。\n\n"
             "## 图片来源\n\n"
             "图片/PDF 文件(multipart)、`http(s)://` URL、本地路径、纯 base64、"
             "完整 data URI 均支持。\n\n"
@@ -645,13 +724,16 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         max_pages: Optional[int] = Form(None),
         dpi: int = Form(200),
         format: Optional[str] = Form(None),
+        retry_mode: Optional[str] = Form(None, description="覆盖 seq 家族 retry 判定(no_text/low_confidence/line_overlap/any/none)"),
+        score_mode: Optional[str] = Form(None, description="覆盖 bestof 家族评分函数(smart/fastest/highest_confidence/longest/fluency)"),
+        max_retries: Optional[int] = Form(None, ge=0, description="同引擎重试次数(0 等价于 cascade)"),
     ) -> Any:
         """路由即策略的专用接口：``POST /ocr/{preset}``。
 
         ``preset`` 路径参数自动识别:
           - 若匹配已注册引擎名(rapidocr / siliconflow / multimodal),等价于
             ``POST /ocr ... -F engine=preset``(强制单引擎);
-          - 否则按策略预设名(local / vl / seq* / bestof* / legacy 别名 /
+          - 否则按策略预设名(local / vl / seq* / cascade* / bestof* / legacy 别名 /
             bestof:<mode>)处理,等价于 ``strategy_name=preset``。
 
         例::
@@ -660,11 +742,15 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             POST /ocr/siliconflow      # 只跑硅基流动
             POST /ocr/bestof           # 所有引擎择优
             POST /ocr/bestof-fluency   # 语义流畅度优先
+            POST /ocr/cascade          # 首个不达标立即降级到下一引擎(不重试)
             POST /ocr/quality          # 窜行降级 + 阅读顺序重排
             POST /ocr/vl               # 仅远程大模型
 
-        模型 / prompt / 格式等仍可覆盖:
+        模型 / prompt / 格式 / 策略旋钮等仍可覆盖:
             POST /ocr/siliconflow ... -F "model=qwen-vl-max" -F "format=text"
+            POST /ocr/seq     ... -F "retry_mode=line_overlap"
+            POST /ocr/bestof  ... -F "score_mode=fastest"
+            POST /ocr/seq     ... -F "max_retries=0"   # 等价于 cascade
         """
         out_format = (format or "json").lower()
         if out_format not in VALID_FORMATS:
@@ -693,6 +779,12 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             body.model = model
         if prompt:
             body.prompt = prompt
+        if retry_mode:
+            body.retry_mode = retry_mode
+        if score_mode:
+            body.score_mode = score_mode
+        if max_retries is not None:
+            body.max_retries = max_retries
         effective = _apply_inline_overrides(state.snapshot(), body)
 
         suffix = os.path.splitext(file.filename or "upload.bin")[1] or ".bin"
@@ -762,6 +854,20 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
                                       "value": {
                                           "image_data": "data:image/png;base64,iVBORw0KGgo...",
                                           "format": "json",
+                                      },
+                                  },
+                                  "with_score_mode": {
+                                      "summary": "bestof 家族切换评分函数",
+                                      "value": {
+                                          "image_url": "https://example.com/scan.png",
+                                          "score_mode": "fastest",
+                                      },
+                                  },
+                                  "with_retry_mode": {
+                                      "summary": "seq 家族切换 retry 判定",
+                                      "value": {
+                                          "image_url": "https://example.com/scan.png",
+                                          "retry_mode": "line_overlap",
                                       },
                                   },
                               },

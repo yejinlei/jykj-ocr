@@ -363,3 +363,103 @@ class TestPresetsEndpoint:
         for path, ops in spec["paths"].items():
             for method, op in ops.items():
                 assert op.get("tags"), f"{method.upper()} {path} is untagged"
+
+
+class TestStrategyKnobs:
+    """Per-request ``retry_mode`` / ``score_mode`` / ``max_retries`` knobs.
+
+    Exercised against :func:`_apply_inline_overrides` directly — the same
+    code path the real ``POST /ocr/{preset}/text`` handler uses. No engine
+    calls, no PIL/rapidocr/openai imports.
+    """
+
+    def _cfg(self):
+        from jykj_ocr.config import from_mapping
+        return from_mapping({
+            "engines": [
+                {"name": "rapidocr", "enabled": True},
+                {"name": "siliconflow", "enabled": True},
+                {"name": "multimodal", "enabled": False},
+            ],
+            "strategy": {"name": "seq", "max_retries": 1},
+            "output": {},
+            "pdf": {},
+        })
+
+    def test_retry_mode_knob_overrides_config(self):
+        from jykj_ocr.server import _apply_inline_overrides, TextRequest
+        body = TextRequest(image_url="", retry_mode="line_overlap")
+        effective = _apply_inline_overrides(self._cfg(), body)
+        assert effective.strategy["retry_mode"] == "line_overlap"
+
+    def test_score_mode_knob_sets_bestof_mode(self):
+        from jykj_ocr.server import _apply_inline_overrides, TextRequest
+        body = TextRequest(image_url="", score_mode="fastest")
+        effective = _apply_inline_overrides(self._cfg(), body)
+        assert effective.strategy["bestof_mode"] == "fastest"
+
+    def test_max_retries_knob_overrides_config(self):
+        from jykj_ocr.server import _apply_inline_overrides, TextRequest
+        body = TextRequest(image_url="", max_retries=3)
+        effective = _apply_inline_overrides(self._cfg(), body)
+        assert effective.strategy["max_retries"] == 3
+
+    def test_retry_mode_knob_wins_over_preset(self):
+        """Explicit ``retry_mode`` beats the ``seq`` preset's default."""
+        from jykj_ocr.server import _apply_inline_overrides, TextRequest
+        body = TextRequest(image_url="", strategy_name="seq", retry_mode="any")
+        effective = _apply_inline_overrides(self._cfg(), body)
+        assert effective.strategy["retry_mode"] == "any"
+
+    def test_score_mode_knob_wins_over_preset(self):
+        """Explicit ``score_mode`` beats ``bestof`` preset's smart default."""
+        from jykj_ocr.server import _apply_inline_overrides, TextRequest
+        body = TextRequest(
+            image_url="", strategy_name="bestof", score_mode="longest"
+        )
+        effective = _apply_inline_overrides(self._cfg(), body)
+        assert effective.strategy["bestof_mode"] == "longest"
+
+    def test_invalid_retry_mode_returns_400(self):
+        from fastapi import HTTPException
+        from jykj_ocr.server import _apply_inline_overrides, TextRequest
+        body = TextRequest(image_url="", retry_mode="bogus")
+        with pytest.raises(HTTPException) as excinfo:
+            _apply_inline_overrides(self._cfg(), body)
+        assert excinfo.value.status_code == 400
+
+    def test_invalid_score_mode_returns_400(self):
+        from fastapi import HTTPException
+        from jykj_ocr.server import _apply_inline_overrides, TextRequest
+        body = TextRequest(image_url="", score_mode="bogus")
+        with pytest.raises(HTTPException) as excinfo:
+            _apply_inline_overrides(self._cfg(), body)
+        assert excinfo.value.status_code == 400
+
+    def test_max_retries_negative_rejected(self):
+        """Pydantic ``ge=0`` on ``TextRequest.max_retries`` blocks negative."""
+        from jykj_ocr.server import TextRequest
+        with pytest.raises(Exception):
+            TextRequest(image_url="", max_retries=-1)
+
+    def test_max_retries_zero_means_cascade(self):
+        """The knob form of cascade: ``max_retries=0`` on ``/ocr/seq``."""
+        from jykj_ocr.engine.registry import build_pipeline
+        from jykj_ocr.server import _apply_inline_overrides, TextRequest
+        body = TextRequest(image_url="", strategy_name="seq", max_retries=0)
+        effective = _apply_inline_overrides(self._cfg(), body)
+        pipeline = build_pipeline(effective)
+        # max_retries=0 → StrategyEngine.retries == 0 (cascade semantics).
+        assert pipeline.retries == 0
+
+    def test_presets_endpoint_lists_cascade(self):
+        """GET /presets must include the new cascade family."""
+        from jykj_ocr.server import create_app
+        client = TestClient(create_app())
+        body = client.get("/presets").json()["presets"]
+        for name in ("cascade", "cascade-low_conf", "cascade-line_overlap"):
+            assert name in body
+            assert body[name]["max_retries"] == 0
+            assert body[name]["retry_mode"] in (
+                "no_text", "low_confidence", "line_overlap"
+            )
