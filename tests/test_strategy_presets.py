@@ -439,6 +439,41 @@ class TestBestofEngine:
         assert summary["engines"] == ["x"]
         assert "fastest" in summary["mode"]
 
+    def test_winner_elapsed_ms_reflects_actual_wall_clock(self):
+        """BestofEngine must stamp the winner with wall-clock elapsed_ms.
+
+        Engines themselves do not set ``elapsed_ms`` — the strategy layer owns
+        that accounting. Before this test, bestof responses reported
+        ``elapsed_ms=0`` because BestofEngine (unlike StrategyEngine) never
+        set it on the winner.
+        """
+        import time
+
+        class SleepyEngine:
+            def __init__(self, name, text, sleep_s, confidence=0.9):
+                self.name = name
+                self._text = text
+                self._sleep_s = sleep_s
+                self._confidence = confidence
+
+            def recognise(self, image):
+                time.sleep(self._sleep_s)
+                result = _result(self._text, confidence=self._confidence)
+                result.engine = self.name
+                return result
+
+        engines = [
+            SleepyEngine("fast", "fast", 0.05),
+            SleepyEngine("slow", "longer slow text", 0.10),
+        ]
+        for mode in ("smart", "fastest", "highest_confidence", "longest"):
+            bestof = BestofEngine(engines, score_mode=mode)
+            winner = bestof.recognise(None)
+            # Both engines sleep ≥ 50ms, so total must exceed 50ms.
+            assert winner.elapsed_ms >= 50, (
+                f"mode={mode}: winner={winner.engine} elapsed_ms={winner.elapsed_ms}"
+            )
+
 
 class TestBuildPipelineBestof:
     def test_bestof_preset_builds_BestofEngine(self):
