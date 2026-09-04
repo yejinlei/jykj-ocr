@@ -320,3 +320,46 @@ class TestPresetRouteText:
                         json={"image_url": "http://x/y.jpg", "format": "json"})
         assert r.status_code == 200, r.text
         assert r.json()["pages"][0]["engine"] == "siliconflow"
+
+
+# ---------------------------------------------------------------------------
+# GET /presets — tests the real app (the fake app above doesn't define it).
+# ---------------------------------------------------------------------------
+class TestPresetsEndpoint:
+    @pytest.fixture
+    def real_client(self):
+        from jykj_ocr.server import create_app
+        return TestClient(create_app())
+
+    def test_returns_all_named_presets(self, real_client):
+        r = real_client.get("/presets")
+        assert r.status_code == 200
+        body = r.json()
+        assert "presets" in body
+        for name in ("bestof-fluency", "fallback", "quality", "seq", "seq-any",
+                     "local", "vl", "bestof"):
+            assert name in body["presets"], f"missing {name}"
+
+    def test_bestof_fluency_metadata(self, real_client):
+        body = real_client.get("/presets").json()["presets"]
+        entry = body["bestof-fluency"]
+        assert entry["is_bestof"] is True
+        assert entry["score_mode"] == "fluency"
+
+    def test_local_and_vl_engine_scope(self, real_client):
+        body = real_client.get("/presets").json()["presets"]
+        assert body["local"]["engine_scope"] == "local_only"
+        assert body["vl"]["engine_scope"] == "remote_vl_only"
+        assert body["seq"]["engine_scope"] == "all_enabled"
+
+    def test_colon_alias_present(self, real_client):
+        body = real_client.get("/presets").json()["presets"]
+        assert "bestof:<mode>" in body
+        assert body["bestof:<mode>"]["is_bestof"] is True
+
+    def test_every_operation_has_a_tag(self, real_client):
+        """Every endpoint must carry a Swagger tag so /docs shows grouping."""
+        spec = real_client.get("/openapi.json").json()
+        for path, ops in spec["paths"].items():
+            for method, op in ops.items():
+                assert op.get("tags"), f"{method.upper()} {path} is untagged"

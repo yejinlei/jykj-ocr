@@ -104,6 +104,33 @@ _SEQ_PRESETS = {
 }
 
 
+def describe_presets() -> Dict[str, Dict[str, Any]]:
+    """Structured description of every named strategy preset.
+
+    Consumed by ``GET /presets`` so callers can discover the full family
+    (including ``bestof-fluency``, ``bestof-line_overlap``…) instead of
+    reading a flat string of names in the ``strategy_name`` description.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, (retry_mode, reorder, is_bestof, score_mode) in _SEQ_PRESETS.items():
+        out[name] = {
+            "retry_mode": retry_mode,
+            "reorder_lines": reorder,
+            "is_bestof": is_bestof,
+            "score_mode": score_mode if is_bestof else None,
+            "engine_scope": (
+                "remote_vl_only" if name == "vl"
+                else "local_only" if name == "local"
+                else "all_enabled"
+            ),
+        }
+    out["bestof:<mode>"] = {
+        "is_bestof": True,
+        "note": "colon syntax alias for bestof-<mode>",
+    }
+    return out
+
+
 def build_engine(name: str, config: Config) -> engine_pkg.BaseEngine:
     """Create an engine by name, falling back to config defaults when present."""
     target = normalise_engine(name)
@@ -306,6 +333,7 @@ __all__ = [
     "build_engine",
     "build_pipeline",
     "build_strategy",
+    "describe_presets",
     "engines_from_config",
     "remote_engines",
     "resolve_retry_check",

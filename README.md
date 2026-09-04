@@ -210,6 +210,7 @@ python -m jykj_ocr serve          # 或 JYKJ_OCR_PORT=9000 python -m jykj_ocr se
 |------|------|------|
 | `GET` | `/health` | 健康检查 |
 | `GET` | `/engines` | 可用引擎列表 + 当前配置的引擎顺序 |
+| `GET` | `/presets` | 全部命名策略预设的元数据(评分模式、重试判定、引擎范围) |
 | `GET` | `/config` | 当前生效配置(**不返回 API key 明文**,仅 `has_api_key` 布尔) |
 | `POST` | `/config` | 运行时覆盖配置(引擎/模型/策略),无需重启 |
 | `DELETE` | `/config` | 清除运行时覆盖,回到配置文件状态 |
