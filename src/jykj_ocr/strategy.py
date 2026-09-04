@@ -97,6 +97,7 @@ class StrategyEngine:
         if not self._engines:
             raise StrategyError("no engines configured for the strategy")
 
+        started = time.perf_counter()
         attempts: List[OCRResult] = []
         last_error: Optional[Exception] = None
 
@@ -112,6 +113,12 @@ class StrategyEngine:
                     continue
                 attempts.append(result)
                 if self._acceptable(engine.config, result):
+                    # Match BestofEngine's accounting: total wall-clock across
+                    # all wrapped engines, including rejected attempts and
+                    # retries. Engines don't set elapsed_ms themselves; the
+                    # strategy layer owns it. Without this line, seq-family
+                    # presets reported elapsed_ms=0 in HTTP responses.
+                    result.elapsed_ms = int((time.perf_counter() - started) * 1000)
                     return result
                 if attempt < self.retries:
                     LOGGER.info("strategy: %s result rejected, retrying", label)
@@ -119,6 +126,7 @@ class StrategyEngine:
         if attempts:
             best = max(attempts, key=lambda r: (r.ok, len(r.text or "")))
             if best.ok:
+                best.elapsed_ms = int((time.perf_counter() - started) * 1000)
                 return best
         if last_error is not None and not attempts:
             raise StrategyError(f"all engines failed: {last_error}") from last_error
