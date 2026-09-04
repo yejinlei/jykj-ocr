@@ -43,6 +43,9 @@ engines:
   - name: rapidocr
     lang: ch
     enabled: true
+    # 本地 OCR 单页耗时上限。超时抛 EngineError，strategy 会切到下一个引擎。
+    # 兰亭序实测 ~10s；30s 给大文档留余量。
+    timeout: 30
 
   # 硅基流动多模态 OCR 大模型
   - name: siliconflow

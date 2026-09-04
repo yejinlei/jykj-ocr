@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import logging
 import mimetypes
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -23,6 +24,20 @@ from ..models import OCRResult
 LOGGER = logging.getLogger(__name__)
 
 MAX_IMAGE_BYTES = 15 * 1024 * 1024  # safety cap for base64 payloads to APIs
+
+#: Fallback timeout when ``EngineConfig.timeout`` is missing or zero. Applies
+#: to every engine — a stuck OCR worker must not hold a FastAPI thread
+#: forever.
+DEFAULT_ENGINE_TIMEOUT_SECONDS = 120.0
+
+#: Pool used to enforce ``EngineConfig.timeout`` across every engine, local or
+#: remote. A local engine (e.g. RapidOCR) may hang inside the ONNX runtime for
+#: pathological inputs; without this wrapper its ``recognise`` blocks the
+#: calling thread with no way to unwind. The pool is shared because each task
+#: is short-lived (one page) and the engines cache heavy state elsewhere.
+_TIMEOUT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="engine-timeout"
+)
 
 Registry = Dict[str, Callable[[EngineConfig], "BaseEngine"]]
 _REGISTRY: Registry = {}
@@ -88,10 +103,63 @@ class BaseEngine:
 
     # -- public API ---------------------------------------------------------
     def recognise(self, page: PageImage) -> OCRResult:
-        """Run recognition on ``page`` and return a normalised result."""
+        """Run recognition on ``page`` and return a normalised result.
+
+        Every engine runs under a wall-clock timeout: the timeout value comes
+        from ``EngineConfig.timeout`` (default 120 s). This matters because
+        local engines like RapidOCR can hang inside the ONNX runtime on
+        pathological inputs, and remote engines like ``multimodal`` can be left
+        waiting for a network response that never arrives — either way the
+        FastAPI worker thread would otherwise be blocked indefinitely.
+
+        ``EngineNotAvailable`` (missing API key, missing Pillow, page without
+        an image, ...) is re-raised unchanged so the strategy layer keeps its
+        existing "engine not usable" vs. "engine failed" distinction.
+        """
+        timeout = self._timeout_seconds()
+        if timeout is None:
+            return self._run_unbounded(page)
+        return self._run_with_timeout(page, timeout)
+
+    def _timeout_seconds(self) -> Optional[float]:
+        """Read ``EngineConfig.timeout`` and fall back to the module default."""
+        raw = getattr(self.config, "timeout", None)
+        try:
+            value = float(raw) if raw is not None else DEFAULT_ENGINE_TIMEOUT_SECONDS
+        except (TypeError, ValueError):
+            LOGGER.warning(
+                "engine %s: invalid timeout %r; using default %ss",
+                self.name, raw, DEFAULT_ENGINE_TIMEOUT_SECONDS,
+            )
+            value = DEFAULT_ENGINE_TIMEOUT_SECONDS
+        if value <= 0:
+            return None  # operator explicitly disabled the safety net
+        return value
+
+    def _run_unbounded(self, page: PageImage) -> OCRResult:
         try:
             raw = self._recognise_impl(page)
         except EngineNotAvailable:
+            raise
+        except Exception as exc:
+            raise EngineError(
+                f"{self.engine_id()} failed: {exc}", engine=self.engine_id()
+            ) from exc
+        return self._wrap(page, raw)
+
+    def _run_with_timeout(self, page: PageImage, timeout: float) -> OCRResult:
+        future = _TIMEOUT_EXECUTOR.submit(self._recognise_impl, page)
+        try:
+            raw = future.result(timeout=timeout)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise EngineError(
+                f"{self.engine_id()} timed out after {timeout:g}s",
+                engine=self.engine_id(),
+            ) from exc
+        except EngineNotAvailable:
+            raise
+        except EngineError:
             raise
         except Exception as exc:
             raise EngineError(
