@@ -54,6 +54,20 @@ LOGGER = logging.getLogger(__name__)
 TEXT_FORMATS = ("text", "markdown")
 VALID_FORMATS = ("json", *TEXT_FORMATS)
 
+# OpenAPI 响应组件:统一的错误响应结构
+_ERROR_RESPONSES = {
+    400: {"description": "坏输入(文件不存在/参数非法/strategy JSON 非对象)"},
+    404: {"description": "未知 preset:路由既非已注册引擎也非策略预设"},
+    422: {"description": "引擎不可用(缺依赖/key)或策略链耗尽"},
+    502: {"description": "引擎调用失败(超时/HTTP 402/网络错误)"},
+}
+
+_PRESET_EXAMPLES = (
+    "local, vl, seq, seq-any, seq-low_conf, seq-line_overlap, "
+    "bestof, bestof-smart, bestof-fastest, bestof-confidence, "
+    "bestof-longest, bestof-fluency, fallback, quality, bestof:<mode>"
+)
+
 #: Config keys that ``POST /config`` is allowed to touch. Anything else is
 #: rejected so a caller cannot smuggle in arbitrary keys.
 _OVERRIDABLE_KEYS = frozenset(("engines", "strategy", "output", "pdf"))
@@ -294,7 +308,41 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     app = FastAPI(
         title="jykj_ocr",
         version="0.1.0",
-        description="多引擎 OCR 服务：本地 RapidOCR + 多模态 OCR 大模型（硅基流动等）",
+        description=(
+            "多引擎 OCR 服务：本地 RapidOCR(离线) + 多模态 OCR 大模型（硅基流动 / 任意 "
+            "OpenAI 兼容端点），通过策略层编排引擎调用顺序与重试逻辑。\n\n"
+            "## 策略预设\n\n"
+            "一次性 `strategy_name`(不改动服务端配置):`local` / `vl` / "
+            "`seq` / `seq-any` / `seq-low_conf` / `seq-line_overlap` / "
+            "`bestof` / `bestof-smart` / `bestof-fastest` / "
+            "`bestof-confidence` / `bestof-longest` / `bestof-fluency` / "
+            "`fallback` / `quality` / `bestof:<mode>`。\n\n"
+            "## 图片来源\n\n"
+            "图片/PDF 文件(multipart)、`http(s)://` URL、本地路径、纯 base64、"
+            "完整 data URI 均支持。\n\n"
+            "## 运行时配置\n\n"
+            "`POST /config` 可热改模型/引擎/策略,无需重启,不回显 API key 明文。"
+        ),
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+        tags=[
+            {
+                "name": "OCR 识别",
+                "description": (
+                    "图片/PDF 文字识别。四种 OCR 端点返回结构完全一致:"
+                    "{pages, text, engine, page_count};"
+                    "format=text/markdown 时退化为纯文本。"
+                ),
+            },
+            {
+                "name": "配置与状态",
+                "description": (
+                    "查看或热改运行时配置。API key 只接受写入,GET /config 不回显明文;"
+                    "DELETE /config 清除所有运行时覆盖,回到配置文件状态。"
+                ),
+            },
+        ],
     )
 
     # -- error mapping ------------------------------------------------------
@@ -364,16 +412,22 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         }
 
     # -- 状态与临时配置接口 ---------------------------------------------------
-    @app.get("/health")
+    @app.get("/health", tags=["配置与状态"],
+         summary="健康检查",
+         description="返回服务状态与已注册引擎名列表(不含当前配置)。")
     async def health() -> Dict[str, Any]:
         return {"status": "ok", "engines": list(describe_engines().keys())}
 
-    @app.get("/engines")
+    @app.get("/engines", tags=["配置与状态"],
+             summary="可用引擎列表",
+             description="返回所有已注册引擎的描述 + 当前配置文件中的引擎顺序。")
     async def engines() -> Dict[str, Any]:
         config = state.snapshot()
         return {"engines": describe_engines(), "configured": [e.name for e in config.engines]}
 
-    @app.get("/config")
+    @app.get("/config", tags=["配置与状态"],
+             summary="当前生效配置",
+             description="返回当前生效配置(配置文件 + 运行时覆盖合并);不返回 API key 明文,仅有 has_api_key 布尔。")
     async def get_config() -> Dict[str, Any]:
         """当前生效配置（含运行时覆盖），不返回 API key 明文。"""
         return {
@@ -381,7 +435,27 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             "overridden": state.has_overrides(),
         }
 
-    @app.post("/config")
+    @app.post("/config", tags=["配置与状态"],
+              summary="运行时覆盖配置",
+              description=(
+                  "部分覆盖运行时配置:设置模型、引擎、策略等,无需重启。"
+                  "把字段设为 null 可还原为配置文件中的值。可覆盖的顶层键:"
+                  "engines / strategy / output / pdf。"
+                  "\n\n示例: {\"engines\": [{\"name\": \"siliconflow\", \"model\": \"qwen-vl-max\"}]} 或 {\"strategy\": {\"max_retries\": 2}}"
+              ),
+              responses={400: {"description": "不支持的配置键或值非法"}},
+              openapi_extra={
+                  "examples": {
+                      "切换模型": {
+                          "summary": "切换 siliconflow 模型",
+                          "value": {"engines": [{"name": "siliconflow", "model": "qwen-vl-max"}]},
+                      },
+                      "调整重试策略": {
+                          "summary": "低置信度时多重试一次",
+                          "value": {"strategy": {"max_retries": 2, "retry_mode": "low_confidence"}},
+                      },
+                  }
+              })
     async def set_config(body: ConfigRequest) -> Dict[str, Any]:
         """运行时覆盖配置：设置模型、引擎、策略等。
 
@@ -410,14 +484,21 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             "overridden": state.has_overrides(),
         }
 
-    @app.delete("/config")
+    @app.delete("/config", tags=["配置与状态"],
+             summary="清除运行时覆盖",
+             description="回退到配置文件状态,丢弃所有 POST /config 的覆盖。")
     async def reset_config() -> Dict[str, Any]:
         """清除所有运行时覆盖，回到配置文件状态。"""
         state.clear()
         return {"ok": True, **_config_view(state.snapshot()), "overridden": False}
 
     # -- OCR 识别接口 -------------------------------------------------------
-    @app.post("/ocr")
+    @app.post("/ocr", tags=["OCR 识别"],
+              summary="上传图片/PDF 识别",
+              description="multipart 上传文件或 URL 识别,支持一次指定 engine / strategy_name / model 等覆盖。",
+              responses=_ERROR_RESPONSES | {
+                  200: {"description": "识别成功,统一结构 {pages, text, engine, page_count}"}
+              })
     async def ocr_upload(
         file: UploadFile = File(..., description="图片或 PDF"),
         engine: Optional[str] = Form(None),
@@ -482,7 +563,12 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
                     pass
         return _ocr_response(results, out_format)
 
-    @app.post("/ocr/text")
+    @app.post("/ocr/text", tags=["OCR 识别"],
+          summary="按图片 URL/base64/data URI 识别",
+          description="JSON body:图片三选一 image_url / image_b64 / image_data(必须恰好传一个)。",
+          responses=_ERROR_RESPONSES | {
+              200: {"description": "识别成功,统一结构 {pages, text, engine, page_count}"}
+          })
     async def ocr_text(body: TextRequest) -> Any:
         """识别图片中的文字。
 
@@ -506,7 +592,17 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         return _ocr_response(results, body.format.lower())
 
     # -- 便捷端点：路由即策略 -----------------------------------------------
-    @app.post("/ocr/{preset}")
+    @app.post("/ocr/{preset}", tags=["OCR 识别"],
+          summary="路由即策略:上传文件",
+          description=(
+              "preset 路径参数自动识别:匹配已注册引擎名(如 rapidocr/siliconflow)等价于"
+              "强制单引擎;匹配策略预设名(如 local/vl/seq/bestof/fallback/quality)等价于"
+              "strategy_name=preset;bestof:<mode> 冒号语法也支持。"
+              "其他值返回 404 并列出全部可用选项。"
+          ),
+          responses=_ERROR_RESPONSES | {
+              200: {"description": "识别成功,统一结构 {pages, text, engine, page_count}"}
+          })
     async def ocr_preset_upload(
         preset: str,
         file: UploadFile = File(..., description="图片或 PDF"),
@@ -587,7 +683,17 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
                     pass
         return _ocr_response(results, out_format)
 
-    @app.post("/ocr/{preset}/text")
+    @app.post("/ocr/{preset}/text", tags=["OCR 识别"],
+              summary="路由即策略:JSON body 识别",
+              description=(
+                  "与 /ocr/text 同义,body 三选一(image_url / image_b64 / image_data);"
+                  "preset 路径参数自动识别:匹配引擎名等价于强制单引擎,匹配策略预设名"
+                  "等价于 strategy_name=preset;bestof:<mode> 冒号语法也支持。"
+                  "其他值返回 404 并列出全部可用选项。"
+              ),
+              responses=_ERROR_RESPONSES | {
+                  200: {"description": "识别成功,统一结构 {pages, text, engine, page_count}"}
+              })
     async def ocr_preset_url(preset: str, body: TextRequest) -> Any:
         """路由即策略的 JSON 接口:``POST /ocr/{preset}/text``。
 
