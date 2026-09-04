@@ -298,6 +298,7 @@ class BestofEngine:
         """Run every engine, pick the highest-scoring ``ok`` result."""
         scored: List[tuple] = []
         last_error: Optional[Exception] = None
+        started = time.perf_counter()
 
         for engine in self._engines:
             try:
@@ -321,6 +322,11 @@ class BestofEngine:
         # prefer highest score, breaking ties by engine order (already inserted)
         scored.sort(key=lambda kv: kv[0], reverse=True)
         winner = scored[0][1]
+        # Match StrategyEngine's accounting: total elapsed_ms across all
+        # wrapped engines. Engines don't set it themselves; only the
+        # Strategy / Bestof layer does. Without this line, bestof responses
+        # reported elapsed_ms=0.
+        winner.elapsed_ms = int((time.perf_counter() - started) * 1000)
         if not winner.ok:
             raise StrategyError(
                 f"bestof exhausted {len(self._engines)} engine(s), "
