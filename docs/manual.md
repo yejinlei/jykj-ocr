@@ -1125,14 +1125,14 @@ curl -s http://localhost:8000/ocr/vl \
 
 ### 9.3 最佳预设(`bestof*`,走 `BestofEngine`)
 
-**工作机制**:所有已启用引擎**各跑一次**,拿到 N 个候选结果后,按评分函数打分,
-**返回得分最高的那一个**。
+**工作机制**:所有已启用引擎**各跑一次**(同步 for-loop,不并发),拿到 N 个
+候选结果后,按评分函数打分,**返回得分最高的那一个**。
 
 ```mermaid
 flowchart TD
     START["调用 ocr(..., strategy_name='bestof')"]
 
-    START --> BRANCH["所有引擎并发运行"]
+    START --> BRANCH["所有引擎顺序运行"]
 
     BRANCH --> E1["引擎 1: rapidocr<br/>recognise() → R1"]
     BRANCH --> E2["引擎 2: siliconflow<br/>recognise() → R2"]
@@ -1430,11 +1430,13 @@ A: 是针对**该页所有已启用引擎各跑一次后的候选结果**。`Bes
    与 `StrategyEngine` 是**并列**的两个 pipeline 组装目标
    (`build_pipeline` 看到 `strategy["bestof_mode"]` 就返回 `BestofEngine`,
    否则返回 `StrategyEngine`)——bestof 内部并**不**再包一层 strategy。
-   一页图片会同时喂给所有启用的引擎,每个引擎返回一个 `OCRResult`,
-   评分函数对每个 `OCRResult` 独立打分,选分最高的那个作为该页输出。
+   `BestofEngine.recognise()` 对 `self._engines` **顺序**逐个
+   `engine.recognise(image)` 调用(参考 `strategy.py:311-313`,`for engine
+   in self._engines:` 是同步 for-loop,没有并发),对每个返回的 `OCRResult`
+   跑一次 `score_fn` 打分,按分数降序排序后取第一个作为该页输出。
    多页 PDF 走的是"每页各选一次 bestof"的逻辑,不是"跨页合并后选"。
-   参考 9.3 节的时序图:三条引擎分支并发跑,评分函数对每个 `OCRResult`
-   独立打分。
+   参考 9.3 节的时序图:三条引擎分支顺序跑同一张图片,评分函数对每个
+   `OCRResult` 独立打分。
 
 **Q: config.yaml 里 siliconflow 为什么比 multimodal 少几个字段?**
 A: 因为默认值在 `EngineConfig.resolved_model` / `resolved_base_url` 里。
