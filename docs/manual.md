@@ -31,7 +31,7 @@ flowchart TB
     subgraph CONFIG["配置层 config.py"]
         ENV["环境变量<br/>OPENAI_API_KEY / OPENAI_BASE_URL<br/>SILICONFLOW_API_KEY / JYKJ_OCR_*"]
         YAML["config/config.yaml<br/>引擎顺序 + 策略"]
-        PREC["优先级<br/>显式参数 > 环境变量 > YAML > 默认"]
+        PREC["优先级<br/>显式参数 > YAML > 环境变量 > 默认"]
         ENV --> PREC
         YAML --> PREC
     end
@@ -47,8 +47,8 @@ flowchart TB
 
     subgraph ENGINES["引擎层 engines/"]
         RAPID["RapidOCREngine<br/>本地 ONNX,离线"]
-        MULTI["MultimodalEngine<br/>OpenAI 兼容 /chat/completions"]
-        SF["siliconflow<br/>注册别名,默认 PaddleOCR-VL-1.5"]
+        MULTI["MultimodalEngine<br/>OpenAI 兼容 /chat/completions<br/>可实例化任意多条"]
+        SF["siliconflow<br/>独立类型,默认 PaddlePaddle/PaddleOCR-VL-1.5"]
     end
 
     subgraph OUTPUT["输出 models.py"]
@@ -171,11 +171,20 @@ cp .env.example .env
 | 变量 | 必需 | 作用 |
 |------|:----:|------|
 | `OPENAI_API_KEY` | 远程引擎必需 | 通用 key,适配任意 OpenAI 兼容平台 |
-| `OPENAI_BASE_URL` | multimodal 必需 | 端点 URL;siliconflow 不设时用内置默认 |
+| `OPENAI_BASE_URL` | 多平台时必需 | 端点 URL;siliconflow 不设时用内置默认。**唯一生效的 base URL 变量,被所有 multimodal 条目共享** |
 | `SILICONFLOW_API_KEY` | 可选 | 仅当 siliconflow 需与 `OPENAI_*` 不同 key 时覆盖 |
+| `JYKJ_OCR_MULTIMODAL_API_KEY` | 可选 | 所有 `multimodal` 条目共享的 key(按类型命名,不按实例) |
+| `JYKJ_OCR_MULTIMODAL_MODEL` | 可选 | 所有 `multimodal` 条目共享的 model 回退值 |
 | `JYKJ_OCR_CONFIG` | 可选 | 配置文件路径(默认 `config/config.yaml`) |
 | `JYKJ_OCR_PORT` | 可选 | HTTP 服务端口(默认 8000) |
 | `JYKJ_OCR_REMOTE_ENGINES` | 可选 | 逗号分隔,把新引擎追加进远程名单(`vl` 侧),见 §9.2 |
+
+> **⚠️ 多实例的 key 限制**:环境变量按「类型」命名(`JYKJ_OCR_MULTIMODAL_*`),不按实例。
+> 一个 key 会被 config.yaml 里所有 `multimodal` 条目读到,所以「不同厂商 / 不同账号」
+> 的组合无法只靠环境变量实现——`base_url` 与 `model` 只能写进 config.yaml 条目,
+> 需要区分账号时必须在条目里显式写 `api_key`(该 yaml 需已 gitignore)。
+> 症状:某平台返回 HTTP 401「Token is invalid」——A 平台的 key 被送进了 B 平台的条目。
+> 单平台多模型不受影响:共用一个 key,条目里只换 `model`。
 
 切换平台示例(改两个变量即可,代码与配置文件不动):
 
@@ -183,6 +192,7 @@ cp .env.example .env
 |------|-------------------|
 | 硅基流动 | `https://api.siliconflow.cn/v1` |
 | 阿里云百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| 模力方舟 | `https://api.moark.com/v1`(注意用**裸模型 ID**,如 `PaddleOCR-VL-1.5`,不带 `PaddlePaddle/` 前缀) |
 | 智谱 | `https://open.bigmodel.cn/api/paas/v4` |
 | 本地 vLLM | `http://localhost:8000/v1` |
 
@@ -220,14 +230,30 @@ engines:
 
 ```mermaid
 flowchart LR
-    A["内置默认值"] -->|被覆盖| B["config/config.yaml"]
-    B -->|被覆盖| C["环境变量<br/>JYKJ_OCR_*<br/>*_API_KEY<br/>OPENAI_*"]
+    A["内置默认值"] -->|被覆盖| B["环境变量<br/>JYKJ_OCR_*<br/>*_API_KEY<br/>OPENAI_*"]
+    B -->|被覆盖| C["config/config.yaml"]
     C -->|被覆盖| D["显式参数<br/>--engine / ocr(engine=...)<br/>POST body / 表单字段"]
     style D fill:#e8f5e9,stroke:#2e7d32,stroke-width:3px
     style A fill:#ffebee,stroke:#c62828
 ```
 
-**口诀**:离用户最近的覆盖最远的。命令行参数 > 环境变量 > YAML 文件 > 代码默认值。
+**口诀**:离用户最近的覆盖最远的。显式参数 > YAML 文件 > 环境变量 > 代码默认值。
+
+这个方向和直觉相反,但确实是代码实现:三个 `resolved_*` 都是「yaml 有值就用 yaml,
+留空才回退环境变量」——每一级都先读自己的字段,为空才去查环境变量。
+
+| 字段 | yaml | 环境变量 | 默认值 |
+|------|------|----------|--------|
+| `base_url` | `base_url:` | `OPENAI_BASE_URL` | siliconflow 内置 URL |
+| `model` | `model:` | `JYKJ_OCR_<NAME>_MODEL` | siliconflow 内置模型 |
+| `api_key` | `api_key:` | `JYKJ_OCR_<NAME>_API_KEY` → `<NAME>_API_KEY` → `OPENAI_API_KEY` | 空 |
+
+**实务后果**:如果 `config.yaml` 里写了 `base_url: https://a.com/v1`,而 `.env` 里写了
+`OPENAI_BASE_URL=https://b.com/v1`,实际走的是 **a.com**——yaml 赢。想让 `.env` 决定平台,
+把 yaml 里的 `base_url` 留空即可(仓库默认 `config/config.yaml` 就是这么配的)。
+
+`.env` 只在进程启动时读取一次(`load_dotenv()`),改完**必须重启服务**才生效——
+已经在跑的进程不会热加载。
 
 ---
 
@@ -279,17 +305,29 @@ flowchart TB
 .venv/Scripts/python -m pytest tests -q
 ```
 
-- **CI 基线**:137 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
-- 覆盖:models、config、strategy、engines(multimodal OpenAI 响应解析、rapidocr
-  1.x/1.4.x/2.x 返回形态)、策略预设(local/vl/seq*/bestof*、deepcopy 不变性、
-  `JYKJ_OCR_REMOTE_ENGINES` 扩展)、窜行检测与阅读顺序重排、inputs 魔数识别
+- **CI 基线**:211 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
+- 覆盖:models、config(别名归一化、YAML、环境变量优先级、多 multimodal 实例去重)、
+  strategy、engines(multimodal OpenAI 响应解析、rapidocr 1.x/1.4.x/2.x 返回形态)、
+  策略预设(local/vl/seq*/cascade*/bestof*、deepcopy 不变性、`JYKJ_OCR_REMOTE_ENGINES` 扩展)、
+  窜行检测与阅读顺序重排、inputs 魔数识别、HTTP 路由与预设端点
 
-端到端接口测试(需联网 + key,非 CI):
+端到端接口测试(需联网 + 真实模型,非 CI):
 
 ```bash
-export OPENAI_API_KEY=...  OPENAI_BASE_URL=https://api.siliconflow.cn/v1
-.venv/Scripts/python scripts/test_interfaces.py
+# 全场景演示脚本
+export OPENAI_API_KEY=***  OPENAI_BASE_URL=https://api.siliconflow.cn/v1
+.venv/Scripts/python scripts/demo.py --ci
+
+# 接口 + 全部策略预设的真实模型回归(34 项,约 7 分钟)
+# 打全部 10 个 HTTP 端点 + 18 个策略预设,结果写 real_model_e2e_result.json(已 gitignore)
+JYKJ_OCR_PORT=8010 .venv/Scripts/python -m jykj_ocr serve &
+.venv/Scripts/python scripts/real_model_e2e.py http://127.0.0.1:8010 tests/兰亭序.jpeg
+# 退出码 = 失败项数
 ```
+
+`real_model_e2e.py` 的实测结论见「引擎实测状态」章节:该轮 34/34 通过,并抓到一个
+离线测试覆盖不到的契约缺陷 —— `image_data` 字段文档写「完整 data URI」,实现却
+无条件再加一层 `data:` 前缀,导致合法输入被 400 拒绝。
 
 ---
 
@@ -995,7 +1033,11 @@ curl -s http://localhost:8000/health
 
 # 引擎列表
 curl -s http://localhost:8000/engines
-# {"engines":{"rapidocr":"本地...","siliconflow":"硅基流动...","multimodal":"通用OpenAI兼容..."},"configured":["rapidocr","siliconflow","multimodal"]}
+# {"engines":{"rapidocr":"本地 RapidOCR...","siliconflow":"硅基流动多模态...","multimodal":"通用 OpenAI 兼容..."},
+ "configured":[{"name":"rapidocr","resolved_name":"rapidocr","enabled":true,"model":"","base_url":""},
+              {"name":"multimodal","resolved_name":"multimodal","enabled":true,
+               "model":"PaddleOCR-VL-1.5","base_url":"https://api.moark.com/v1"}]}
+# configured 是实例级列表:每个 multimodal 条目各占一行,带 model/base_url 指纹,便于区分同名引擎
 ```
 
 ### 8.8 异常映射
@@ -1445,8 +1487,10 @@ A: 因为默认值在 `EngineConfig.resolved_model` / `resolved_base_url` 里。
    把默认值又抄一遍,反而让换模型的运维人员忘了还有
    `JYKJ_OCR_SILICONFLOW_MODEL` 环境变量这条路。multimodal 是**通用**
    引擎,没有默认 base_url / model,必须显式给——所以它的注释列出来了。
-   两者是同一个 `MultimodalEngine` 类(siliconflow 只是注册别名),字段
-   集合完全相同,只是默认值分布不同。
+   两者是同一个 `MultimodalEngine` 类,但注册为两个**独立类型**(`multimodal` 与
+   `siliconflow`):字段集合完全相同,只是默认值分布不同——`siliconflow` 自带默认
+   模型与 base URL,`multimodal` 必须显式给。写多条 `name: multimodal` 时每条都是
+   独立实例,由 `(base_url, model, api_key)` 区分。
 
 **Q: multimodal 报 "no base URL"?**
 A: 没设 `OPENAI_BASE_URL` 且 config.yaml 中 multimodal 的 `base_url` 留空。multimodal

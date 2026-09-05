@@ -15,6 +15,7 @@ from jykj_ocr.config import (
     load_prompt,
     normalise_engine,
 )
+from jykj_ocr.engines.multimodal_engine import MultimodalEngine
 
 _KEY_ENVS = (
     "OPENAI_API_KEY",
@@ -58,14 +59,18 @@ class TestNormaliseEngine:
 
 
 class TestEngineConfig:
-    def test_siliconflow_resolves_base_url(self):
+    def test_siliconflow_resolves_base_url(self, monkeypatch):
+        """Without OPENAI_BASE_URL, siliconflow falls back to its built-in URL."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         assert EngineConfig(name="siliconflow").resolved_base_url == SILICONFLOW_BASE_URL
 
     def test_base_url_trailing_slash_stripped(self):
         cfg = EngineConfig(name="multimodal", base_url="https://example.test/v1/")
         assert cfg.resolved_base_url == "https://example.test/v1"
 
-    def test_multimodal_has_no_default_base_url(self):
+    def test_multimodal_has_no_default_base_url(self, monkeypatch):
+        """multimodal has no built-in URL of its own — only the env var or config."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         assert EngineConfig(name="multimodal").resolved_base_url == ""
 
     def test_siliconflow_default_model(self, monkeypatch):
@@ -116,6 +121,147 @@ class TestEngineConfig:
         merged = cfg.merged_extra()
         merged["prompt_file"] = "changed"
         assert cfg.extra["prompt_file"] == "p.txt"
+
+    def test_dedupe_key_uses_resolved_tuple(self):
+        """Dedupe key is (resolved_name, base_url, model, api_key, lang, prompt)
+        — 6-tuple. """
+        a = EngineConfig(name="multimodal", base_url="https://a.test", model="m", api_key="k1")
+        b = EngineConfig(name="multimodal", base_url="https://a.test", model="m", api_key="k2")
+        c = EngineConfig(name="multimodal", base_url="https://a.test", model="m", api_key="k1")
+        assert len(a.dedupe_key()) == 6
+        assert a.dedupe_key() != b.dedupe_key()
+        assert a.dedupe_key() == c.dedupe_key()
+
+    def test_dedupe_key_keeps_distinct_lang(self):
+        """Two local entries differing only in ``lang`` must NOT collapse —
+        they issue different recogniser calls and both should survive."""
+        a = EngineConfig(name="rapidocr", lang="ch")
+        b = EngineConfig(name="rapidocr", lang="en")
+        assert a.dedupe_key() != b.dedupe_key()
+
+    def test_dedupe_key_keeps_distinct_prompt(self):
+        """Same provider+model with different prompts are different calls."""
+        a = EngineConfig(name="multimodal", model="m", prompt="p1")
+        b = EngineConfig(name="multimodal", model="m", prompt="p2")
+        assert a.dedupe_key() != b.dedupe_key()
+
+    def test_from_mapping_keeps_both_lang_variants(self):
+        """Regression: identical ``resolved_*`` tuples used to silently drop the
+        second ``rapidocr`` entry when only ``lang`` differed."""
+        cfg = from_mapping({
+            "engines": [
+                {"name": "rapidocr", "lang": "ch"},
+                {"name": "rapidocr", "lang": "en"},
+            ],
+        })
+        assert [e.lang for e in cfg.engines] == ["ch", "en"]
+
+    def test_from_mapping_still_collapses_true_duplicates(self):
+        """Exact duplicates (same lang+prompt) must still collapse to one entry
+        so the pipeline doesn't issue the same network call twice."""
+        cfg = from_mapping({
+            "engines": [
+                {"name": "multimodal", "model": "m", "prompt": "p"},
+                {"name": "multimodal", "model": "m", "prompt": "p"},
+                {"name": "multimodal", "model": "m", "prompt": "different"},
+            ],
+        })
+        assert len(cfg.engines) == 2
+        assert [e.prompt for e in cfg.engines] == ["p", "different"]
+
+
+class TestMultipleMultimodalInstances:
+    """``multimodal`` is a type with unlimited instances; each engine instance
+    owns its provider + model + key, and strategy scoring sees them as peers."""
+
+    def test_each_entry_becomes_an_independent_engine_instance(self, monkeypatch):
+        """OPENAI_* env vars provide shared defaults; each entry owns its
+        base_url/model/api_key so instances aren't confused."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://default.test")
+        cfg = from_mapping({
+            "engines": [
+                {"name": "multimodal", "base_url": "https://api.siliconflow.cn/v1",
+                 "model": "PaddlePaddle/PaddleOCR-VL-1.5", "api_key": "sk-sf"},
+                {"name": "multimodal", "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                 "model": "doubao-1-5-vision-pro-32k", "api_key": "sk-ark"},
+            ]
+        })
+        engines = [MultimodalEngine(ecfg) for ecfg in cfg.engines]
+        assert [e.base_url for e in engines] == [
+            "https://api.siliconflow.cn/v1",
+            "https://ark.cn-beijing.volces.com/api/v3",
+        ]
+        assert [e.model_name for e in engines] == [
+            "PaddlePaddle/PaddleOCR-VL-1.5",
+            "doubao-1-5-vision-pro-32k",
+        ]
+        assert [e.api_key for e in engines] == ["sk-sf", "sk-ark"]
+
+    def test_engine_id_is_stable_across_instances(self, monkeypatch):
+        """engine_id() returns the type name so OCRResult.engine / score_mode
+        dispatch is unaffected by how many multimodal entries exist."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://x.test")
+        a = MultimodalEngine(EngineConfig(name="multimodal", model="m1"))
+        b = MultimodalEngine(EngineConfig(name="multimodal", model="m2"))
+        assert a.engine_id() == b.engine_id() == "multimodal"
+
+    def test_env_fallback_only_applies_when_entry_silent(self, monkeypatch):
+        """OPENAI_BASE_URL supplies a default for a silent entry, but an entry
+        with an explicit base_url keeps it (no bleed from sibling env vars)."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://env.test")
+        monkeypatch.delenv("JYKJ_OCR_MULTIMODAL_MODEL", raising=False)
+        explicit = MultimodalEngine(EngineConfig(name="multimodal",
+                                                 base_url="https://explicit.test"))
+        silent = MultimodalEngine(EngineConfig(name="multimodal"))
+        assert explicit.base_url == "https://explicit.test"
+        assert silent.base_url == "https://env.test"
+
+    def test_per_entry_model_beats_env_and_default(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://x.test")
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_MODEL", "env-model")
+        explicit = MultimodalEngine(EngineConfig(name="multimodal", model="mine"))
+        silent = MultimodalEngine(EngineConfig(name="multimodal"))
+        assert explicit.model_name == "mine"
+        assert silent.model_name == "env-model"
+
+    def test_engine_class_uses_instance_config_not_type_default(self, monkeypatch):
+        """Model comes from the entry, not the type's default — critical
+        when multiple multimodal entries coexist."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://x.test")
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_MODEL", "env-model")
+        explicit = MultimodalEngine(EngineConfig(name="multimodal", model="custom"))
+        assert explicit.model_name == "custom"
+
+    def test_siliconflow_default_url_without_env(self, monkeypatch):
+        """With no env overrides a ``siliconflow`` entry resolves to the
+        vendor's built-in URL and model — the zero-config path."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("JYKJ_OCR_SILICONFLOW_MODEL", raising=False)
+        engine = MultimodalEngine(EngineConfig(name="siliconflow"))
+        assert engine.base_url == SILICONFLOW_BASE_URL
+        assert engine.model_name == "PaddlePaddle/PaddleOCR-VL-1.5"
+
+    def test_siliconflow_entry_still_reads_openai_env(self, monkeypatch):
+        """Documented precedence is explicit config -> OPENAI_BASE_URL ->
+        vendor default, so a siliconflow entry honours the standard env var
+        too (same as any other OpenAI-compatible entry)."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://other.test/v1")
+        monkeypatch.delenv("JYKJ_OCR_SILICONFLOW_MODEL", raising=False)
+        engine = MultimodalEngine(EngineConfig(name="siliconflow"))
+        assert engine.base_url == "https://other.test/v1"
+        assert engine.model_name == "PaddlePaddle/PaddleOCR-VL-1.5"
+
+    def test_generic_multimodal_reads_openai_env(self, monkeypatch):
+        """A generic ``multimodal`` entry with no explicit config falls back
+        to OPENAI_BASE_URL / OPENAI_API_KEY — the "one token, any provider"
+        path."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://any.test/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-generic")
+        monkeypatch.delenv("JYKJ_OCR_MULTIMODAL_MODEL", raising=False)
+        engine = MultimodalEngine(EngineConfig(name="multimodal"))
+        assert engine.base_url == "https://any.test/v1"
+        assert engine.api_key == "sk-generic"
+        assert engine.model_name == "PaddlePaddle/PaddleOCR-VL-1.5"
 
 
 class TestFromMapping:

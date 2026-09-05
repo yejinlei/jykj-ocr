@@ -58,6 +58,10 @@ tmp/
 out/
 test_image.png
 diag_out.json
+# Real-model E2E run output (scripts/real_model_e2e.py) —— 含真实模型返回的文本
+real_model_e2e_result.json
+e2e_stdout*.txt
+server_e2e.log
 
 # Archify review evidence (delivered artifacts stay, temp evidence does not)
 docs/arch/_*.json

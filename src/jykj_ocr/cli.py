@@ -50,7 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="jykj_ocr",
         description="多引擎 OCR：本地 RapidOCR 与多模态 OCR 大模型（硅基流动等）",
     )
-    parser.add_argument("source", nargs="?", help="图片或 PDF 路径，或 http(s) URL")
+    parser.add_argument(
+        "source",
+        nargs="?",
+        help="图片或 PDF 路径，或 http(s) URL；也可为 serve 子命令",
+    )
     parser.add_argument("-c", "--config", help="配置文件路径（默认 config/config.yaml）")
     parser.add_argument(
         "--engine",
@@ -73,15 +77,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", help="输出文件；缺省打印到 stdout")
     parser.add_argument("--max-pages", type=int, help="最多处理的 PDF 页数")
     parser.add_argument("--dpi", type=int, default=200, help="PDF 渲染 DPI（默认 200）")
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="服务监听地址（仅 serve 子命令生效）",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("JYKJ_OCR_PORT", "8000")),
+        help="服务端口（仅 serve 子命令生效，可由 JYKJ_OCR_PORT 覆盖）",
+    )
     parser.add_argument("--list-engines", action="store_true", help="列出可用引擎后退出")
     parser.add_argument("-v", "--verbose", action="store_true", help="开启调试日志")
-
-    sub = parser.add_subparsers(dest="command")
-    serve = sub.add_parser("serve", help="启动 FastAPI 服务")
-    serve.add_argument("--host", default="0.0.0.0")
-    serve.add_argument("--port", type=int, default=int(os.getenv("JYKJ_OCR_PORT", "8000")))
-    serve.add_argument("--config", help="配置文件路径")
     return parser
+
+
+#: 作为子命令的关键字。刻意不用 argparse 的 add_subparsers——子命令名会和位置参数
+#: source 争夺同一份 token 流，导致 `jykj_ocr image.png --engine rapidocr` 报
+#: "invalid choice: 'image.png' (choose from 'serve')"。改成预处理 argv 里的
+#: `serve` 关键字，既保留 `jykj_ocr serve --port 8000`，又让 OCR 路径能正常吃
+#: 任意文件路径。
+_SERVE_KEYWORD = "serve"
+
+
+def _split_serve_command(argv: Optional[List[str]]) -> tuple:
+    """把 ``serve`` 关键字从 argv 里摘出来，供主解析器继续处理。"""
+    args = list(argv) if argv is not None else list(sys.argv[1:])
+    serving = _SERVE_KEYWORD in args
+    return serving, [a for a in args if a != _SERVE_KEYWORD]
 
 
 def _write_output(text: str, output: Optional[str]) -> None:
@@ -121,7 +145,9 @@ def _serve(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     _load_dotenv()
+    serving, argv = _split_serve_command(argv)
     args = build_parser().parse_args(argv)
+    args.command = _SERVE_KEYWORD if serving else None
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

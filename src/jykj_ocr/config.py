@@ -9,7 +9,10 @@ Precedence (highest wins):
 4. Built-in defaults.
 
 Engine names are resolved here so the rest of the codebase never hard-codes a
-provider string.
+provider string. A single config may list unlimited ``multimodal`` entries —
+each points at a different provider (SiliconFlow, Moonshot, DeepSeek,
+DashScope, Ark, ...) distinguished by ``(base_url, model, api_key)``. Entries
+with identical resolved tuples collapse at parse time (first wins).
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from __future__ import annotations
 import copy
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 #: SiliconFlow's default OpenAI-compatible base URL.
 SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
@@ -110,7 +113,7 @@ class EngineConfig:
         env_base = os.getenv("OPENAI_BASE_URL")
         if env_base:
             return env_base.rstrip("/")
-        if self.name == "siliconflow":
+        if self.resolved_name == "siliconflow":
             return SILICONFLOW_BASE_URL
         return ""
 
@@ -125,11 +128,11 @@ class EngineConfig:
         """
         if self.model:
             return self.model
-        upper = self.name.upper().replace("-", "_").replace(".", "_")
+        upper = self.resolved_name.upper().replace("-", "_").replace(".", "_")
         env_model = os.getenv(f"{_ENV_PREFIX}_{upper}_MODEL")
         if env_model:
             return env_model
-        return "PaddlePaddle/PaddleOCR-VL-1.5" if self.name == "siliconflow" else ""
+        return "PaddlePaddle/PaddleOCR-VL-1.5" if self.resolved_name == "siliconflow" else ""
 
     @property
     def resolved_api_key(self) -> str:
@@ -140,7 +143,7 @@ class EngineConfig:
         """
         if self.api_key:
             return self.api_key
-        upper = self.name.upper().replace("-", "_").replace(".", "_")
+        upper = self.resolved_name.upper().replace("-", "_").replace(".", "_")
         candidates = [
             f"{_ENV_PREFIX}_{upper}_API_KEY",
             f"{upper}_API_KEY",
@@ -154,6 +157,34 @@ class EngineConfig:
 
     def merged_extra(self) -> Dict[str, Any]:
         return dict(self.extra)
+
+    def dedupe_key(self) -> Tuple[str, str, str, str, str, str]:
+        """Distinguishing tuple used to collapse duplicates at parse time.
+
+        Two entries with identical ``(resolved_name, resolved_base_url,
+        resolved_model, resolved_api_key, lang, prompt)`` are the same
+        provider+model combination issuing the same call; the first wins.
+
+        ``resolved_name`` keeps an unrecognised engine name (e.g. ``acme-vl``)
+        distinct from another entry with the same defaults — every engine type
+        is its own instance. ``lang`` and ``prompt`` are the two named fields
+        that change behaviour without changing the network call, so omitting
+        them silently dropped a configured entry (e.g. two ``rapidocr`` rows,
+        one ``lang: ch`` and one ``lang: en`` — only the first survived).
+        """
+        return (
+            self.resolved_name,
+            self.resolved_base_url,
+            self.resolved_model,
+            self.resolved_api_key,
+            self.lang,
+            self.prompt,
+        )
+
+    @property
+    def resolved_name(self) -> str:
+        """Canonical engine id after alias folding (e.g. ``sf`` → ``siliconflow``)."""
+        return normalise_engine(self.name)
 
 
 _ENGINE_KNOWN_KEYS = {
@@ -171,6 +202,20 @@ _ENGINE_KNOWN_KEYS = {
 }
 
 
+def _dedupe_engines(engines: List["EngineConfig"]) -> List["EngineConfig"]:
+    """Collapse entries with the same resolved ``(name, base_url, model, api_key)``.
+
+    ``multimodal`` is a type with unlimited instances; entries differ by
+    base_url / model / api_key. Identical entries would waste a network
+    call, so the first wins.
+    """
+    seen: Dict[Tuple[str, str, str, str, str, str], "EngineConfig"] = {}
+    for engine in engines:
+        key = engine.dedupe_key()
+        seen.setdefault(key, engine)
+    return list(seen.values())
+
+
 @dataclass
 class Config:
     """Top-level application configuration."""
@@ -181,7 +226,19 @@ class Config:
     pdf: Dict[str, Any] = field(default_factory=dict)
 
     def engines_by_name(self) -> Dict[str, EngineConfig]:
-        return {e.name: e for e in self.engines}
+        """Group engines by canonical type. Multiple instances of the same
+        type (e.g. two ``multimodal`` entries pointing at different vendors)
+        collapse to the first entry — use :meth:`engines_of_type` for all.
+        """
+        out: Dict[str, EngineConfig] = {}
+        for engine in self.engines:
+            out.setdefault(engine.resolved_name, engine)
+        return out
+
+    def engines_of_type(self, engine_type: str) -> List[EngineConfig]:
+        """All entries whose canonical type equals ``engine_type``."""
+        want = normalise_engine(engine_type)
+        return [e for e in self.engines if e.resolved_name == want]
 
     def find_engine(self, name: str) -> Optional[EngineConfig]:
         want = normalise_engine(name)
@@ -232,6 +289,7 @@ def from_mapping(data: Dict[str, Any]) -> Config:
             engines.append(_parse_engine(raw))
     if not engines:
         engines.append(EngineConfig(name="multimodal"))
+    engines = _dedupe_engines(engines)
 
     return Config(
         engines=engines,

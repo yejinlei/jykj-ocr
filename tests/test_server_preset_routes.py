@@ -60,6 +60,7 @@ def _apply_inline_overrides(config, body: TextRequest):
             "enabled": e.enabled,
             "model": e.model,
             "base_url": e.base_url,
+            "api_key": e.api_key,
             "temperature": e.temperature,
             "timeout": e.timeout,
             "max_tokens": e.max_tokens,
@@ -115,7 +116,7 @@ def _build_faked_app(cfg):
     rapid = _FakeEngine("rapidocr", "rap", 0.9, elapsed_ms=80)
     sf = _FakeEngine("siliconflow", "siliconflow longer text here.", 1.0, elapsed_ms=1200)
 
-    def _fake_build_engine(name, config):
+    def _fake_build_engine(name, config, engine_config=None):
         norm = engine_registry.normalise_engine(name)
         if norm == "rapidocr":
             return rapid
@@ -365,6 +366,104 @@ class TestPresetsEndpoint:
                 assert op.get("tags"), f"{method.upper()} {path} is untagged"
 
 
+class TestEnginesEndpointMultipleInstances:
+    """GET /engines' `configured` field must distinguish multiple
+    ``multimodal`` instances in a multi-provider config."""
+
+    @pytest.fixture
+    def multi_client(self, tmp_path, monkeypatch):
+        """A client whose server loads a config file we control."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("JYKJ_OCR_MULTIMODAL_API_KEY", raising=False)
+        monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
+        monkeypatch.delenv("JYKJ_OCR_SILICONFLOW_API_KEY", raising=False)
+        yield tmp_path, monkeypatch
+
+    def _client_from_yaml(self, tmp_path, monkeypatch, yaml_body):
+        path = tmp_path / "cfg.yaml"
+        path.write_text(yaml_body, encoding="utf-8")
+        monkeypatch.setenv("JYKJ_OCR_CONFIG", str(path))
+        from jykj_ocr.server import create_app
+        return TestClient(create_app())
+
+    def test_multiple_multimodal_instances_are_distinguishable(self, multi_client):
+        """A config listing two multimodal entries with different (base_url,
+        model) must surface both in ``/engines.configured``, not collapse to
+        a single string name."""
+        tmp_path, monkeypatch = multi_client
+        yaml_body = """
+engines:
+  - name: multimodal
+    base_url: https://api.siliconflow.cn/v1
+    model: PaddlePaddle/PaddleOCR-VL-1.5
+    api_key: sk-sf
+  - name: multimodal
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    model: doubao-1-5-vision-pro-32k
+    api_key: sk-ark
+"""
+        client = self._client_from_yaml(tmp_path, monkeypatch, yaml_body)
+        r = client.get("/engines")
+        assert r.status_code == 200
+        configured = r.json()["configured"]
+        assert len(configured) == 2
+        # Each entry exposes a (name, model, base_url) fingerprint so two
+        # same-named instances are still distinguishable by the client.
+        models = sorted(e["model"] for e in configured)
+        base_urls = sorted(e["base_url"] for e in configured)
+        assert models == ["PaddlePaddle/PaddleOCR-VL-1.5", "doubao-1-5-vision-pro-32k"]
+        assert base_urls == [
+            "https://api.siliconflow.cn/v1",
+            "https://ark.cn-beijing.volces.com/api/v3",
+        ]
+        # No entry leaks an api_key.
+        for entry in configured:
+            assert "api_key" not in entry
+            assert "has_api_key" not in entry
+
+    def test_same_provider_different_accounts_stay_distinct(self, multi_client):
+        """Two siliconflow entries with the same base_url+model but different
+        api_key are separate instances — dedupe must not collapse them."""
+        tmp_path, monkeypatch = multi_client
+        yaml_body = """
+engines:
+  - name: multimodal
+    base_url: https://api.siliconflow.cn/v1
+    model: PaddlePaddle/PaddleOCR-VL-1.5
+    api_key: sk-sf-a
+  - name: multimodal
+    base_url: https://api.siliconflow.cn/v1
+    model: PaddlePaddle/PaddleOCR-VL-1.5
+    api_key: sk-sf-b
+"""
+        client = self._client_from_yaml(tmp_path, monkeypatch, yaml_body)
+        r = client.get("/engines")
+        configured = r.json()["configured"]
+        assert len(configured) == 2
+        assert all(e["name"] == "multimodal" for e in configured)
+        assert all(e["model"] == "PaddlePaddle/PaddleOCR-VL-1.5" for e in configured)
+
+    def test_config_endpoint_shows_has_api_key_bool_not_plaintext(self, multi_client):
+        """GET /config must expose ``has_api_key`` (bool) but never echo the
+        key itself — critical when a single deployment has many keys."""
+        tmp_path, monkeypatch = multi_client
+        yaml_body = """
+engines:
+  - name: multimodal
+    base_url: https://api.siliconflow.cn/v1
+    model: PaddlePaddle/PaddleOCR-VL-1.5
+    api_key: sk-secret-1
+"""
+        client = self._client_from_yaml(tmp_path, monkeypatch, yaml_body)
+        r = client.get("/config")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["engines"][0]["has_api_key"] is True
+        assert "api_key" not in body["engines"][0]
+        serialized = r.text
+        assert "sk-secret-1" not in serialized
+
+
 class TestStrategyKnobs:
     """Per-request ``retry_mode`` / ``score_mode`` / ``max_retries`` knobs.
 
@@ -463,3 +562,52 @@ class TestStrategyKnobs:
             assert body[name]["retry_mode"] in (
                 "no_text", "low_confidence", "line_overlap"
             )
+
+
+class TestTextRequestSourceResolution:
+    """``TextRequest.source()`` — the three image input forms.
+
+    ``image_data`` is documented as a *complete* data URI, so it must be passed
+    through untouched. A regression here turns a valid data URI into
+    ``data:application/octet-stream,data:image/...``, which base64-decodes to
+    garbage and the caller sees as HTTP 400. Caught by the real-model E2E run.
+    """
+
+    def test_image_data_with_prefix_is_untouched(self):
+        from jykj_ocr.server import TextRequest
+        uri = "data:image/jpeg;base64,/9j/4AAQ"
+        body = TextRequest(image_data=uri)
+        assert body.source() == uri
+
+    def test_image_data_without_prefix_gets_one(self):
+        """Callers who stripped the prefix themselves should still work."""
+        from jykj_ocr.server import TextRequest
+        body = TextRequest(image_data="/9j/4AAQ")
+        src = body.source()
+        assert src.startswith("data:")
+        assert src.endswith("/9j/4AAQ")
+        # Exactly one prefix — the nested form is what broke the endpoint.
+        assert src.count("data:") == 1
+
+    def test_image_b64_gets_prefixed(self):
+        from jykj_ocr.server import TextRequest
+        body = TextRequest(image_b64="/9j/4AAQ")
+        assert body.source() == "data:image/octet-stream;base64,/9j/4AAQ"
+
+    def test_image_url_passes_through(self):
+        from jykj_ocr.server import TextRequest
+        assert TextRequest(image_url="scan.png").source() == "scan.png"
+
+    def test_exactly_one_input_required(self):
+        """None or multiple image sources are rejected by ``source()``.
+
+        The invariant is checked in ``source()``, not the constructor — the
+        endpoint catches the resulting HTTPException and maps it to 400.
+        """
+        from fastapi import HTTPException
+        from jykj_ocr.server import TextRequest
+        for kwargs in ({}, {"image_url": "a.png", "image_b64": "AA=="},
+                       {"image_b64": "AA==", "image_data": "AA=="}):
+            with pytest.raises(HTTPException) as excinfo:
+                TextRequest(**kwargs).source()
+            assert excinfo.value.status_code == 400

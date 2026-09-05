@@ -5,20 +5,24 @@
 #
 # name —— 命名预设（默认 fallback；API/CLI 可用 strategy_name 一次性覆盖）:
 #   local             只用本地引擎（rapidocr 等），远程引擎全部禁用
-#   vl                只用 VL 大模型（siliconflow/multimodal），本地引擎禁用
+#   vl                只用远程 VL 大模型（multimodal），本地引擎禁用
 #   seq               按 engines 顺序回退（retry_mode=no_text，默认行为）
 #   seq-any           seq + any 重试谓词 + 阅读顺序重排（= quality）
 #   seq-low_conf      seq + low_confidence 重试
 #   seq-line_overlap  seq + line_overlap 重试（无文字或窜行即降级）
+#   cascade           seq 但 max_retries=0（同一引擎不重试，直接降级）
+#   cascade-low_conf  cascade + low_confidence 重试
+#   cascade-line_overlap cascade + line_overlap 重试
 #   bestof            所有引擎各跑一次，按 score 选最佳（默认 smart 模式）
-#   bestof-smart      同上；smart = 置信度 − 窜行惩罚 + 文本长度奖赏
+#   bestof-smart      同上；smart = 置信度 − 窜行惩罚 + 文本长度奖赏 + 语义流畅度
 #   bestof-fastest    按耗时（elapsed_ms）最低选
 #   bestof-confidence 按平均置信度最高选
 #   bestof-longest    按识别文本最长选
-#   bestof:<mode>     等价于 bestof-mode（mode 见上）
+#   bestof-fluency    按语义流畅度选（短语密度 + CJK 标点 − 单字碎片惩罚）
+#   bestof:<mode>     等价于 bestof-<mode>（mode 见上）
 #   fallback          seq 的旧别名（保留兼容）
 #   quality           seq-any 的旧别名（保留兼容）
-# retry_mode —— 精细控制（仅 seq* 与 legacy 预设使用；bestof* 无需设置）:
+# retry_mode —— 精细控制（仅 seq* / cascade* 与 legacy 预设使用；bestof* 无需设置）:
 #   no_text         无文字时重试（默认）
 #   low_confidence  平均置信度 < min_confidence 时重试
 #   line_overlap    无文字或版面疑似窜行时重试
@@ -38,6 +42,45 @@ pdf:
   max_pages: 50
   dpi: 200
 
+# ============================================================================
+# engines —— 可列出任意数量的 multimodal 条目，每条指向一个平台的一个模型
+# ============================================================================
+#
+# name: multimodal 是一个「类型」，不是实例 id。每条 entry 都会实例化为一个
+# 独立的 MultimodalEngine，由 (base_url, model, api_key) 区分。三种常见搭配:
+#   1) 同厂商不同模型  —— base_url/api_key 相同，model 不同
+#   2) 不同厂商        —— base_url 不同（siliconflow / 火山 ark / 百炼 / 本地 vLLM）
+#   3) 同厂商不同账号  —— base_url/model 相同，api_key 不同
+#
+# 相同 (base_url, model, api_key) 的多条 entry 会在解析时合并为一条（第一条胜出），
+# 不同平台/不同模型/不同 key 各自独立实例化。
+#
+# 支持的 alias：
+#   multi / multimodal / openai / openai-compat / openai-compatible / llm
+#   sf / silicon-flow / silicon_flow        →  multimodal（通用 OpenAI 兼容）
+#   siliconflow                              →  siliconflow（自带默认 URL/模型，零配置）
+#
+# 每条字段（未列出的键都进 extra，不影响解析）：
+#   name        类型名或 alias（default: multimodal）
+#   enabled     true/false（default: true）
+#   base_url    OpenAI 兼容端点 URL。留空时 multimodal 读 OPENAI_BASE_URL 环境变量，
+#               两者都无则报错；siliconflow 留空则用内置硅基流动默认
+#   model       模型 ID。留空时 multimodal 读 JYKJ_OCR_MULTIMODAL_MODEL；
+#               siliconflow 留空则用 PaddlePaddle/PaddleOCR-VL-1.5
+#   api_key     直接写入（多账号场景必须显式区分；单账号用环境变量）
+#   temperature 采样温度（default: 0.0）
+#   timeout     单页耗时上限，秒（default: 120）
+#   max_tokens  最大 token 数
+#   prompt      用户提示词
+#   prompt_file 从文件读取提示词（等价 prompt 的懒加载）
+#   lang        本地 OCR 语言（仅 rapidocr 使用）
+#
+# 注意：环境变量按「类型」而非「实例」命名。凭据走「通用」一对
+# OPENAI_API_KEY / OPENAI_BASE_URL(适配任意平台,硅基流动只是其中之一);
+# 多条 multimodal entry 共享同一个 key,所以无法只靠环境变量区分账号——
+# 需要多账号时直接写 api_key(该 yaml 需已 gitignore)。
+# ============================================================================
+
 engines:
   # 本地引擎：离线可用，无需 API key
   - name: rapidocr
@@ -47,28 +90,81 @@ engines:
     # 兰亭序实测 ~10s；30s 给大文档留余量。
     timeout: 30
 
-  # 硅基流动多模态 OCR 大模型
-  - name: siliconflow
-    # model 留空：siliconflow 默认 PaddlePaddle/PaddleOCR-VL-1.5（见 config.py
-    # EngineConfig.resolved_model）。要换其他视觉模型（Qwen3-VL / Kimi-K2.7-Code
-    # 等），设环境变量 JYKJ_OCR_SILICONFLOW_MODEL 或 --model。
-    base_url: https://api.siliconflow.cn/v1
-    # api_key 建议用环境变量 SILICONFLOW_API_KEY 提供
-    temperature: 0.0
+  # ========================================================================
+  # 远程引擎 —— 全部走通用 OpenAI 兼容协议
+  #
+  # base_url 一律留空，由环境变量的「通用」一对决定平台（见 .env）：
+  #   OPENAI_API_KEY=<你的平台 key>
+  #   OPENAI_BASE_URL=https://api.moark.com/v1
+  # 换平台只改 .env 那一行，本文件不动。yaml 里只写各条目的差异（model/prompt）。
+  # 注意：不同厂商的 model ID 可能不同（moark 用裸 ID，硅基流动要带厂商前缀），
+  # 换平台后若报「模型不存在」，按目标平台改一下下面的 model 即可。
+  # ========================================================================
+
+  # 模力方舟 moark：PaddleOCR-VL-1.5（已启用，实测可用）
+  # 注意：moark 用「裸模型 ID」，不带厂商前缀——写 PaddleOCR-VL-1.5，
+  # 不是硅基流动的 PaddlePaddle/PaddleOCR-VL-1.5。
+  - name: multimodal
+    enabled: true
+    base_url:            # 留空 -> 读 OPENAI_BASE_URL
+    model: PaddleOCR-VL-1.5
     timeout: 180
-    # image_format: jpeg   # 体积更小的上传格式
     prompt: |
       请识别图片中的全部文字内容，按原文的版面顺序输出。
       只输出识别到的文字，不要翻译、不要解释、不要添加任何多余内容。
       如果是表格，请用 Markdown 表格输出。
 
-  # 通用 OpenAI 兼容端点（阿里云百炼、腾讯、智谱、本地 vLLM 等）
-  # base_url / api_key 留空，由环境变量 OPENAI_BASE_URL / OPENAI_API_KEY 提供，
-  # 这样切换平台只需改一对环境变量，无需改此文件。
-  # model 也留空：multimodal 会回退到 MultimodalEngine.DEFAULT_MODEL
-  # （PaddlePaddle/PaddleOCR-VL-1.5，硅基流动上有效）；指向其他平台时用
-  # --model 或 POST /config 指定该平台可用的视觉模型。
+  # 同一平台、不同模型（同厂商不同模型组合，已启用）
+  # 实测 Qwen3-VL-30B 在兰亭序上输出简体+标点，还多认出了 PaddleOCR 漏掉的落款行
+  # 输出质量更高，但响应也更慢（~13s vs ~7s）
   - name: multimodal
-    enabled: false
-    # base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    # model: qwen-vl-max   # 阿里云模型名；换平台时改为该平台可用模型
+    enabled: true
+    base_url:            # 留空 -> 读同一个 OPENAI_BASE_URL
+    model: Qwen3-VL-30B-A3B-Instruct
+    timeout: 180
+    prompt: |
+      请识别图片中的全部文字内容，按原文的版面顺序输出。
+      只输出识别到的文字，不要翻译、不要解释、不要添加任何多余内容。
+      如果是表格，请用 Markdown 表格输出。
+
+  # --- 其他平台示例（按需启用） -------------------------------------------
+  # 同时启用多个「不同平台」：必须把 base_url 写进条目——环境变量按类型命名，
+  # OPENAI_BASE_URL 被所有 multimodal 条目共享，无法区分平台。
+
+  # 阿里云百炼
+  # - name: multimodal
+  #   enabled: false
+  #   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  #   model: qwen-vl-max-latest
+  #   timeout: 180
+
+  # 火山方舟（豆包 / 通用 VLM）
+  # - name: multimodal
+  #   enabled: false
+  #   base_url: https://ark.cn-beijing.volces.com/api/v3
+  #   model: <你的 endpoint 或 model ID>
+  #   timeout: 180
+
+  # 本地 vLLM / Ollama（离线私有化部署）
+  # - name: multimodal
+  #   enabled: false
+  #   base_url: http://localhost:8000/v1
+  #   model: Qwen/Qwen2.5-VL-72B-Instruct
+  #   timeout: 180
+
+  # siliconflow 独立类型：零配置，自带默认 URL 与 PaddlePaddle/PaddleOCR-VL-1.5。
+  # 需要自己的 key（SILICONFLOW_API_KEY，写在 .env）；只要通用 key 指向别的平台，
+  # 本条就会被送错凭据并返回 HTTP 401「Token is invalid」——保持 enabled: false。
+  # - name: siliconflow
+  #   enabled: false
+  #   timeout: 180
+  #   prompt: |
+  #     请识别图片中的全部文字内容，按原文的版面顺序输出。
+
+  # 同厂商不同账号：base_url/model 相同，只换 api_key
+  # 环境变量按类型命名，无法区分账号——这里必须显式写 api_key
+  # - name: multimodal
+  #   enabled: false
+  #   base_url: https://api.moark.com/v1
+  #   model: PaddleOCR-VL-1.5
+  #   api_key: ${SECOND_ACCOUNT_KEY}   # 提交前替换为真实值，勿入库

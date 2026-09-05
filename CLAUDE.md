@@ -9,10 +9,11 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 - **语言/框架**:Python 3.10+,pydantic v2,FastAPI,Pillow。
 - **引擎**:
   - `rapidocr` — RapidOCR ONNX(离线),适配 1.4.x `(results, elapsed)`、1.x tuple 与 2.x dict 返回形态。
-  - `multimodal` — 通用 OpenAI 兼容 `/chat/completions`,只依赖 `requests`(不引入 `openai` SDK)。
-  - `siliconflow` — `multimodal` 的注册别名(同一 MultimodalEngine 实例,无独立子类文件),默认模型 `PaddlePaddle/PaddleOCR-VL-1.5`、base URL `https://api.siliconflow.cn/v1`(注入于 `config.py`)。
-- **引擎别名**:rapid/rapid-ocr/rapidocr-onnx → rapidocr;sf/silicon-flow/silicon_flow → siliconflow;
-  multi/openai/openai-compat/openai-compatible/llm → multimodal(`config.normalise_engine`)。
+  - `multimodal` — 通用 OpenAI 兼容 `/chat/completions`,只依赖 `requests`(不引入 `openai` SDK)。**一个类型、无限实例**:config 里可写任意多条 `multimodal`,每条由 `(base_url, model, api_key)` 区分并各自实例化。
+  - `siliconflow` — 独立类型(非别名),与 `multimodal` 共用 `MultimodalEngine` 类但无独立子类文件;它自带默认模型 `PaddlePaddle/PaddleOCR-VL-1.5` 与 base URL `https://api.siliconflow.cn/v1`(注入于 `config.py`),零配置即可用。
+- **引擎别名**:rapid/rapid-ocr/rapidocr-onnx → rapidocr;multi/openai/openai-compat/openai-compatible/llm → multimodal;
+  sf/silicon-flow/silicon_flow → multimodal(通用端点);`siliconflow` 本身保留为独立类型(`config.normalise_engine`)。
+- **多实例去重**:`dedupe_key()` = `(resolved_name, resolved_base_url, resolved_model, resolved_api_key, lang, prompt)`,`from_mapping` 解析时折叠完全相同的条目(第一条胜出);同厂商不同模型、不同厂商、同厂商不同账号三种搭配都各自实例化。
 - **Docker**:`python:3.11-slim` 非 root,含 `HEALTHCHECK`,通过 `JYKJ_OCR_CONFIG` / `JYKJ_OCR_PORT` 注入配置。
 
 ## 项目布局
@@ -23,19 +24,19 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 │   ├── __init__.py            # 顶层 API:ocr() / ocr_to_text()
 │   ├── config.py              # Config / EngineConfig / from_mapping / load_config / normalise_engine
 │   ├── models.py              # Point / BoundingBox / TextRegion / OCRResult
-│   ├── strategy.py            # StrategyEngine / 重试谓词(no_text/low_confidence/line_overlap)/combine_predicates
+│   ├── strategy.py            # StrategyEngine / BestofEngine / 重试谓词(no_text/low_confidence/line_overlap)/combine_predicates
 │   ├── engine/
 │   │   ├── __init__.py        # 惰性注册(lazy import,不引入 PIL/rapidocr/openai)
 │   │   ├── base.py            # BaseEngine / PageImage / EngineNotAvailable / registry
 │   │   ├── inputs.py          # 图片/PDF/URL → PageImage(PDF 尝试 pymupdf → pdf2image → Pillow)
-│   │   └── registry.py        # build_engine / build_pipeline / apply_strategy_preset / remote_engines / resolve_retry_check
+│   │   └── registry.py        # build_engine / build_pipeline / apply_strategy_preset / remote_engines / describe_presets / _SEQ_PRESETS
 │   ├── engines/
 │   │   ├── rapidocr_engine.py     # RapidOCREngine
-│   │   └── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容;同时注册 siliconflow 别名工厂)
+│   │   └── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容;注册 multimodal + siliconflow 两个类型)
 │   ├── cli.py               # argparse CLI(`jykj-ocr` / `serve` / `--list-engines` / `--engine` / `--strategy-name` / `--format`)
-│   └── server.py            # FastAPI /ocr /ocr/text /config /engines /health
-├── config/config.yaml       # 默认引擎+策略,api_key 有意省略(走环境变量)
-├── tests/                   # pytest,50 个用例(50 passed)
+│   └── server.py            # FastAPI /ocr /ocr/text /ocr/{preset} /ocr/{preset}/text /config /engines /presets /health
+├── config/config.yaml       # 默认引擎+策略,api_key 有意省略(走环境变量);多实例示例已注释
+├── tests/                   # pytest,211 个用例(211 passed)
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / pyproject.toml
 ├── .env                     # 存放真实 API key(已 gitignore,勿提交)
@@ -49,11 +50,11 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 # 安装(仅外部依赖;rapidocr_onnxruntime 按需要单独装)
 .venv/Scripts/python -m pip install -r requirements.txt
 
-# 运行测试(目前 50 passed)
+# 运行测试(目前 211 passed)
 .venv/Scripts/python -m pytest tests -q
 
-# CLI 识别
-.venv/Scripts/python -m jykj_ocr ocr -i image.png --engine siliconflow --format json
+# CLI 识别(source 是位置参数,没有 ocr 子命令,也没有 -i)
+.venv/Scripts/python -m jykj_ocr image.png --engine siliconflow --format json
 .venv/Scripts/python -m jykj_ocr --list-engines
 
 # 启动 HTTP 服务(端口默认 8000,可由 JYKJ_OCR_PORT 覆盖)
@@ -68,7 +69,7 @@ docker compose up -d
 ## API 概要
 
 - **FastAPI**:
-  - `GET /health`,`GET /engines`,`GET /config`,`POST /config`(运行时覆盖模型/引擎/策略),`DELETE /config`
+  - `GET /health`,`GET /engines`,`GET /presets`(全部命名预设的元数据),`GET /config`,`POST /config`(运行时覆盖模型/引擎/策略),`DELETE /config`
   - `POST /ocr`(multipart,文件 + 可选 `engine`/`model`/`prompt`/`strategy`/`strategy_name`/`max_pages`/`dpi`/`format`)
   - `POST /ocr/{preset}`(multipart,路由即策略)
   - `POST /ocr/text`(JSON body,图片来源三选一:`image_url`(路径/URL) / `image_b64`(base64 字符串) / `image_data`(完整 data URI))
@@ -80,10 +81,14 @@ docker compose up -d
     `seq`(retry=no_text)/ `seq-any`(retry=any,reorder=on)= quality /
     `seq-low_conf`(retry=low_confidence)/ `seq-line_overlap`(retry=line_overlap)。
     `local` 仅本地引擎 / `vl` 仅远程 VL 引擎(同 `StrategyEngine`,改 enabled 标志)。
+  - `cascade*` 家族:同 `StrategyEngine` 但 `max_retries=0`——被 reject 的尝试立刻降级
+    下一引擎,不重试同一引擎。`cascade`(= seq 语义)/ `cascade-low_conf` /
+    `cascade-line_overlap`。
   - 最佳预设 `bestof*`(走 `BestofEngine`,所有引擎各跑一次,按评分选最佳):
-    `bestof`/`bestof-smart`(置信度−窜行惩罚+文本长度奖赏)/
+    `bestof`/`bestof-smart`(置信度−窜行惩罚+文本长度奖赏+语义流畅度)/
     `bestof-fastest`(elapsed_ms 最低)/`bestof-confidence`(平均置信度最高)/
-    `bestof-longest`(文本最长)/`bestof:<mode>`(语法别名)。
+    `bestof-longest`(文本最长)/`bestof-fluency`(短语密度+CJK 标点−单字碎片惩罚)/
+    `bestof:<mode>`(语法别名)。
   - legacy 别名:`fallback` == `seq` / `quality` == `seq-any`(保留兼容)。
   - `apply_strategy_preset` 返回 deepcopy,输入 config 不被改动;未知名称 CLI 报
     argparse 错、HTTP 返回 400。远程/本地划分走 `remote_engines()`(内置
@@ -94,7 +99,17 @@ docker compose up -d
 - **retry_mode**:`no_text`(默认)/ `low_confidence` / `line_overlap`(无文字或窜行) /
   `any`(低置信度或窜行任一) / `none`。窜行检测在 `models.detect_line_overlap`
   (超长宽比合并框 + 双轴重叠框),重排在 `models.rebuild_text_from_regions`。
-- **配置优先级**:显式参数 > 环境变量(`JYKJ_OCR_*`, `JYKJ_OCR_<NAME>_API_KEY`, `<NAME>_API_KEY`, `OPENAI_API_KEY`;base URL 同样支持 `OPENAI_BASE_URL`)> config.yaml > 默认值。远程引擎统一走 OpenAI 兼容协议:设一对 `OPENAI_API_KEY`/`OPENAI_BASE_URL` 即可指向任意平台,siliconflow 引擎不设这对变量时仍用内置默认 URL。
+- **配置优先级**:**显式参数 > config.yaml > 环境变量 > 默认值**。
+  `config.py` 的三个 `resolved_*` 都是「yaml 里有值就用 yaml,留空才回退环境变量」:
+  `base_url` 走 yaml → `OPENAI_BASE_URL` → siliconflow 内置默认;
+  `model` 走 yaml → `JYKJ_OCR_<NAME>_MODEL` → siliconflow 内置默认;
+  `api_key` 走 yaml → `JYKJ_OCR_<NAME>_API_KEY` → `<NAME>_API_KEY` → `OPENAI_API_KEY`。
+  **环境变量不会覆盖 yaml 里已写的值**——`config.yaml` 一旦写了 `base_url`,
+  `.env` 的 `OPENAI_BASE_URL` 就被忽略。想让环境变量接管平台,把 yaml 里的
+  `base_url` 留空(当前 `config/config.yaml` 就是这么配的)。
+  远程引擎统一走 OpenAI 兼容协议:设一对 `OPENAI_API_KEY`/`OPENAI_BASE_URL` 即可指向任意平台,
+  siliconflow 引擎不设这对变量时仍用内置默认 URL。
+  **`.env` 只在进程启动时读一次**(`load_dotenv()`),改 `.env` 必须重启服务才生效。
 
 ## 架构要点
 
@@ -118,7 +133,28 @@ docker compose up -d
 
 - `rapidocr` — 166 个区域,置信度 0.97+,离线可用。1.4.x 返回 `(results, elapsed)`,`_run()` 通过 `_looks_like_results_list()` 区分真实结果与计时数据(否则会把浮点计时误读为文本)。
 - `siliconflow` — `PaddlePaddle/PaddleOCR-VL-1.5`,HTTP 200,返回完整全文。
-- `multimodal` — 用 `OPENAI_API_KEY`/`OPENAI_BASE_URL` 指向硅基流动同样跑通,验证了"统一 OpenAI 兼容端点"的可行性。
+- `multimodal` — 用 `OPENAI_API_KEY`/`OPENAI_BASE_URL` 指向任意平台均可跑通,验证了"统一 OpenAI 兼容端点"的可行性。
+
+### 真实模型 E2E(`scripts/real_model_e2e.py`,34 项全部通过,~436s)
+
+凭据走**通用** `OPENAI_API_KEY`/`OPENAI_BASE_URL` 一对,当前指向模力方舟
+`https://api.moark.com/v1`(裸模型 ID,不带厂商前缀)。34/34 通过:
+
+- **接口**(16 项):`/health` `/engines` `/presets`(18 项)/`/config` GET/POST/DELETE
+  (`key_leaked=False`)/`/ocr`(multipart)/`/ocr/text`(image_url / image_b64 / image_data
+  三选一)/`/ocr/{preset}` `/ocr/{preset}/text`/`format=text` 与 `format=markdown`
+  返回 `text/plain`(不是 JSON 信封)/缺 file→422/未知预设→400。
+- **策略**(18 项):local/vl/seq*/cascade*/bestof* 全部、`bestof:<mode>` 冒号别名、
+  `fallback`/`quality` legacy 别名。实测结果与预期一致:
+  - `seq`/`cascade`/`fallback` → 首个命中即 `rapidocr`(488 字,~7.6-10.1s)
+  - `seq-any`/`seq-line_overlap`/`cascade-line_overlap`/`quality` → 被 reject 后降级
+    `multimodal`(324 字,~16-26s),窜行判定确实生效
+  - `bestof*` 各评分函数选出不同赢家:`-fastest`/`-longest` → `rapidocr`(488 字),
+    `-smart`/`-fluency` → `multimodal` 418 字(Qwen3-VL-30B,简体+标点),
+    `-confidence` → `multimodal` 324 字(PaddleOCR-VL-1.5)
+- 该轮抓到的缺陷:`TextRequest.image_data` 文档写「完整 data URI」,实现却无条件再加
+  一层 `data:` 前缀,合法输入被 400 拒绝。已修复(前缀存在则原样透传),
+  并加 `TestTextRequestSourceResolution` 5 个回归用例。
 
 ## 维护提示
 
@@ -128,6 +164,6 @@ docker compose up -d
 3. 不要往 repo 提交真实 API key;`.env` 已 gitignore,新环境用 `.env.example` 起手。
 4. 加新引擎:实现 `BaseEngine` 子类 + `_recognise_impl` + `_wrap`,用 `@register("name")` 装饰工厂函数;
    若要保留惰性 import,在 `engine/__init__.py` 里 `register_lazy` 即可。
-5. 改 API 契约前跑一遍 `pytest tests -q`;当前 50 passed 是基线。
+5. 改 API 契约前跑一遍 `pytest tests -q`;当前 211 passed 是基线。
 6. `engines_from_config` 不带显式 names 时只用 **enabled** 引擎(尊重 `enabled: false`);
    加新引擎后跑一遍预设测试确认 `local`/`vl` 归类正确(远程名单外的都进 local)。
