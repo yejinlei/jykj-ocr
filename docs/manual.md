@@ -1383,9 +1383,68 @@ results = jykj_ocr.ocr("report.pdf", engine="rapidocr", max_pages=10, dpi=300)
 > 像人话",优先 `bestof-fluency`;如果对速度敏感,`seq`(默认)或 `seq-low_conf`
 > 往往更快。
 
+### 9.8 远程模型选型参考(实测数据,2026-09-05)
+
+远端硅基流动上,视觉能力模型分三类:**OCR 专用**、**通用 VL**、**通用对话/
+代码 Agent**。jykj_ocr 只适合前两类。同图(`tests/兰亭序.jpeg`,750×1390
+繁体古文)直接调 `POST /v1/chat/completions` 的实测结果:
+
+| Model | 类型 | HTTP | elapsed | 字符数 | 输出形态 | 结论 |
+|---|---|:---:|---:|---:|---|---|
+| `PaddlePaddle/PaddleOCR-VL-1.5` | OCR 专用 0.9B | 200 | **3.11s** | 352 | 全文,无分段 | ✅ 默认首选,速度最快 |
+| `Qwen/Qwen3-VL-8B-Instruct` | 通用 VL 8B | 200 | 8.88s | 350 | 全文,自然分段 | ✅ 稳,做兜底 |
+| `Qwen/Qwen3-VL-30B-A3B-Instruct` | MoE 30B/激活 3B | 200 | 11.96s | **360** | **自动分段**,排版最漂亮 | ✅ 文本整理最佳 |
+| `Qwen/Qwen3-VL-32B-Instruct` | 通用 VL 32B | 200 | 1.48s | 4 | 拒识长文,只回 "OK" | ❌ 不做 OCR |
+| `Qwen/Qwen3-VL-8B-Thinking` | 思考版 | 200 | 113.82s | 327 | 完整但慢 30× | ❌ 思考浪费 |
+| `deepseek-ai/DeepSeek-OCR` | OCR 专用 3B | 200 | 2.25s | 128 | **乱码+截断**("ights'n]" 出现) | ❌ 输出崩坏 |
+| `moonshotai/Kimi-K2.7-Code` | 代码 Agent | 200 | **157s** | 372 | 完整但**"墨趣"幻觉前缀** | ❌ 40× 慢+幻觉 |
+| `Qwen/Qwen3-VL-14B-Instruct` | — | 400 | — | — | Siliconflow 未上架 | ❌ 不存在 |
+
+**推荐组合**:
+- **默认 OCR**:`PaddlePaddle/PaddleOCR-VL-1.5`(0.9B 专用,3 秒级)
+- **文本整理**:`Qwen/Qwen3-VL-30B-A3B-Instruct`(自动分段、多语言、256K 上下文)
+- **兜底**:`Qwen/Qwen3-VL-8B-Instruct`(dense 8B,与 30B 质量接近但更省)
+
+**明确不推荐**:
+- **`-Thinking` 后缀**:思考 tokens 占满延迟(113s+),OCR 任务不需要推理。
+- **通用代码/对话 Agent 模型**(Kimi-K2.7-Code、GLM-4.5V 等):延迟高、
+  带 `reasoning_content`、可能产生幻觉前缀。这些是 Agent 场景,不是 OCR 场景。
+- **`Qwen3-VL-32B-Instruct`**:短 prompt 会拒识长文档(只回几个字),需要
+  更长 prompt 引导才做 OCR,不划算。
+
+**通用对话/代码模型为什么做不了 OCR**:它们把图片当作"要理解的对象",
+优先回答指令;OCR 是需要"逐字识别+顺序输出"的机械任务,专用 OCR 模型
+(PaddleOCR-VL-1.5 / DeepSeek-OCR)和专注视觉的 VL 模型(Qwen3-VL)
+才在训练目标上对齐 OCR。
+
+**bestof 与多模型的配合**:配好两个以上远程引擎后,`/ocr/bestof-fluency`
+会同时跑它们并选"读起来最像人话"的输出——正好对应上表里"文本整理最佳"
+那一档。`/ocr/bestof-fastest` 则会选最快,通常落在 PaddleOCR-VL-1.5。
+
 ---
 
 ## 10. 常见问题
+
+**Q: bestof 是针对某个引擎,还是所有 OCR 结果?**
+A: 是针对**该页所有已启用引擎各跑一次后的候选结果**。`BestofEngine`
+   与 `StrategyEngine` 是**并列**的两个 pipeline 组装目标
+   (`build_pipeline` 看到 `strategy["bestof_mode"]` 就返回 `BestofEngine`,
+   否则返回 `StrategyEngine`)——bestof 内部并**不**再包一层 strategy。
+   一页图片会同时喂给所有启用的引擎,每个引擎返回一个 `OCRResult`,
+   评分函数对每个 `OCRResult` 独立打分,选分最高的那个作为该页输出。
+   多页 PDF 走的是"每页各选一次 bestof"的逻辑,不是"跨页合并后选"。
+   参考 9.3 节的时序图:三条引擎分支并发跑,评分函数对每个 `OCRResult`
+   独立打分。
+
+**Q: config.yaml 里 siliconflow 为什么比 multimodal 少几个字段?**
+A: 因为默认值在 `EngineConfig.resolved_model` / `resolved_base_url` 里。
+   siliconflow 的 `model` 默认就是 `PaddlePaddle/PaddleOCR-VL-1.5`、
+   `base_url` 默认就是 `https://api.siliconflow.cn/v1`,写进 YAML 只是
+   把默认值又抄一遍,反而让换模型的运维人员忘了还有
+   `JYKJ_OCR_SILICONFLOW_MODEL` 环境变量这条路。multimodal 是**通用**
+   引擎,没有默认 base_url / model,必须显式给——所以它的注释列出来了。
+   两者是同一个 `MultimodalEngine` 类(siliconflow 只是注册别名),字段
+   集合完全相同,只是默认值分布不同。
 
 **Q: multimodal 报 "no base URL"?**
 A: 没设 `OPENAI_BASE_URL` 且 config.yaml 中 multimodal 的 `base_url` 留空。multimodal
