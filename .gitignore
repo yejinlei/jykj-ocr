@@ -69,3 +69,6 @@ docs/arch/*.visual-check.*
 
 # zvec-grep workspace index (local retrieval cache)
 .zvec-grep/
+
+# 本地工作区临时文件(提交信息草稿、E2E 运行日志等)
+.scratch/
