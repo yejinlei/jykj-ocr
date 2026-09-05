@@ -163,12 +163,20 @@ def describe_presets() -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def build_engine(name: str, config: Config) -> engine_pkg.BaseEngine:
-    """Create an engine by name, falling back to config defaults when present."""
+def build_engine(name: str, config: Config, engine_config: Optional[EngineConfig] = None) -> engine_pkg.BaseEngine:
+    """Create an engine by name, falling back to config defaults when present.
+
+    ``engine_config`` (optional) overrides the config lookup. Passing it is
+    how ``engines_from_config`` builds one instance per entry when the
+    config has multiple entries of the same type (e.g. two ``multimodal``
+    entries pointing at different vendors — ``find_engine`` returns only
+    the first, so we need to hand each entry its own ``EngineConfig``).
+    """
     target = normalise_engine(name)
-    found = config.find_engine(target) if config else None
-    engine_config = found or EngineConfig(name=target)
-    return engine_pkg.create_engine(target, engine_config)
+    found = engine_config
+    if found is None:
+        found = config.find_engine(target) if config else None
+    return engine_pkg.create_engine(target, found or EngineConfig(name=target))
 
 
 def build_strategy(
@@ -213,16 +221,22 @@ def resolve_retry_check(strategy: Dict[str, Any]) -> Optional[StrategyFn]:
 def engines_from_config(
     config: Config, names: Optional[Sequence[str]] = None
 ) -> List[Any]:
-    """Instantiate engines, in config order unless ``names`` overrides it."""
-    wanted = list(names) if names else [e.name for e in config.enabled_engines()]
-    result: List[Any] = []
-    for name in wanted:
-        if not name:
-            continue
-        result.append(build_engine(name, config))
-    if not result:
-        result.append(build_engine("multimodal", config))
-    return result
+    """Instantiate engines, in config order unless ``names`` overrides it.
+
+    Iterates over *entries*, not names — so a config with multiple
+    ``multimodal`` instances (different vendors / models / accounts) yields
+    one engine per entry, each with its own ``base_url`` / ``model`` /
+    ``api_key``.
+    """
+    if names:
+        return [build_engine(n, config) for n in names if n]
+    instances = [
+        build_engine(e.name, config, engine_config=e)
+        for e in config.engines if e.enabled
+    ]
+    if not instances:
+        instances.append(build_engine("multimodal", config))
+    return instances
 
 
 def apply_strategy_preset(config: Config, name: str) -> Config:

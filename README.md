@@ -17,12 +17,25 @@ CLI、Python API 与 FastAPI HTTP 接口。
 | 引擎 | 类型 | 需 API key | 默认模型 | 说明 |
 |------|------|:----------:|---------|------|
 | `rapidocr` | 本地 ONNX | ❌ | — | RapidOCR-onnxruntime,离线可用,中英文 |
-| `siliconflow` | 远程多模态 | ✅ | `PaddlePaddle/PaddleOCR-VL-1.5` | 硅基流动,multimodal 的注册别名(同一引擎实例),默认模型/URL 注入于 config.py |
-| `multimodal` | 远程多模态 | ✅ | 由 config 指定 | 通用 OpenAI 兼容端点,适配任意平台 |
+| `siliconflow` | 远程多模态 | ✅ | `PaddlePaddle/PaddleOCR-VL-1.5` | 独立类型(非别名):零配置即可用,默认模型/URL 注入于 config.py |
+| `multimodal` | 远程多模态 | ✅ | 由 config 指定 | 通用 OpenAI 兼容端点,**一个类型、无限实例** |
+
+**多实例**:`multimodal` 是「类型」不是「实例 id」。config.yaml 里可以写任意多条
+`name: multimodal`,每条实例化为一个独立的 `MultimodalEngine`,由
+`(base_url, model, api_key)` 区分。三种常见搭配:
+
+1. **同厂商不同模型** — `base_url`/`api_key` 相同,只换 `model`
+2. **不同厂商** — `base_url` 不同(硅基流动 / 模力方舟 moark / 火山 ark / 百炼 / 本地 vLLM)
+3. **同厂商不同账号** — `base_url`/`model` 相同,只换 `api_key`
+
+完全相同的六条 tuple 会在解析时合并为一条(第一条胜出)。注意环境变量按「类型」命名
+(`JYKJ_OCR_MULTIMODAL_API_KEY`),不会按实例区分——需要区分账号时必须在条目里显式写
+`api_key`。
 
 **引擎别名**(`config.normalise_engine`):`rapid`/`rapid-ocr`/`rapidocr-onnx` → `rapidocr`;
-`sf`/`silicon-flow`/`silicon_flow` → `siliconflow`;
-`multi`/`openai`/`openai-compat`/`openai-compatible`/`llm` → `multimodal`。
+`multi`/`openai`/`openai-compat`/`openai-compatible`/`llm` → `multimodal`;
+`sf`/`silicon-flow`/`silicon_flow` → `multimodal`(通用端点);
+`siliconflow` → `siliconflow`(独立类型,自带默认 URL 与模型)。
 
 远程引擎统一走 **OpenAI 兼容协议**(`POST /chat/completions`,`messages` 数组 +
 `image_url` data-URI content parts),只依赖 `requests`,不引入 `openai` SDK。
@@ -42,6 +55,11 @@ CLI、Python API 与 FastAPI HTTP 接口。
 | `seq-any` | 同 seq,但低置信度或窜行即降级 | `any` | ✅ 按坐标重建阅读顺序 |
 | `seq-low_conf` | 低置信度时自动降级 | `low_confidence` | ❌ |
 | `seq-line_overlap` | 窜行时自动降级 | `line_overlap` | ❌ |
+| `cascade` | 同 seq,但 `max_retries=0`(不重试同一引擎,直接降级) | `no_text` | ❌ |
+| `cascade-low_conf` | cascade + 低置信度降级 | `low_confidence` | ❌ |
+| `cascade-line_overlap` | cascade + 窜行降级 | `line_overlap` | ❌ |
+
+`cascade*` 与 `seq*` 共用同一套 `StrategyEngine` 逻辑,区别只在被 reject 的尝试是否重试同一引擎。
 
 **最佳策略**(`bestof*`,所有引擎各跑一次,按评分选最佳):
 
@@ -147,8 +165,13 @@ cp .env.example .env              # 复制模板,填入真实 key
 | `OPENAI_BASE_URL` | 端点 URL(硅基流动 / 阿里云百炼 / 智谱 / 本地 vLLM 等) |
 | `SILICONFLOW_API_KEY` | 可选,仅当 siliconflow 需要与 `OPENAI_*` 不同的 key 时覆盖 |
 
-**配置优先级**(高 → 低):显式参数 > 环境变量(`JYKJ_OCR_*`、`JYKJ_OCR_<NAME>_API_KEY`、
-`<NAME>_API_KEY`、`OPENAI_API_KEY`、`OPENAI_BASE_URL`)> `config/config.yaml` > 内置默认值。
+**配置优先级**(高 → 低):显式参数 > `config/config.yaml` > 环境变量(`JYKJ_OCR_*`、
+`JYKJ_OCR_<NAME>_API_KEY`、`<NAME>_API_KEY`、`OPENAI_API_KEY`、`OPENAI_BASE_URL`)> 内置默认值。
+
+注意方向:三个 `resolved_*` 都是「yaml 有值就用 yaml,留空才回退环境变量」,所以
+**环境变量不会覆盖 yaml 里已写的字段**。想让 `OPENAI_BASE_URL` 决定平台,
+把 `config.yaml` 里的 `base_url` 留空即可(仓库默认配置就是这样)。
+另外 `.env` 只在进程启动时读取一次,改完必须重启服务。
 
 ## CLI
 
@@ -177,7 +200,11 @@ python -m jykj_ocr serve --port 8000
 | `-o` / `--output` | 输出文件;缺省打印到 stdout |
 | `--max-pages` | PDF 最多处理页数 |
 | `--dpi` | PDF 渲染 DPI(默认 200) |
-| `serve` | 启动 FastAPI 服务(`--host` / `--port`) |
+| `serve` | 启动 FastAPI 服务(`--host` / `--port`);关键字,放在任意位置均可 |
+
+OCR 与 `serve` 共用同一组选项,`--host` / `--port` 仅在 `serve` 时生效。
+`serve` 刻意实现为关键字而不是 argparse 子命令——子命令会与位置参数 `source`
+争抢同一份 token 流,导致 `jykj_ocr image.png` 报 `invalid choice`(见 tests/test_cli.py)。
 
 ## Python API
 
@@ -279,16 +306,31 @@ docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
 .venv/Scripts/python -m pytest tests -q     # 全部离线,无真实 API 调用
 ```
 
-137 个用例覆盖:models(边界框/文本区域/置信度保留)、config(别名归一化/YAML/环境变量
-优先级)、strategy(重试链/谓词)、engines(multimodal 的 OpenAI 响应解析 / rapidocr 的
-1.x 3-tuple 与 1.4.x 2-tuple 返回形态)。
+211 个用例覆盖:models(边界框/文本区域/置信度保留)、config(别名归一化/YAML/环境变量
+优先级/多 multimodal 实例去重)、strategy(重试链/谓词)、engines(multimodal 的 OpenAI 响应解析
+/ rapidocr 的 1.x 3-tuple 与 1.4.x 2-tuple 返回形态)、server(HTTP 路由与预设、
+`TextRequest.source()` 三种图片来源)、presets(`seq*`/`cascade*`/`bestof*` 展开)、
+cli(argparse 解析:`serve` 关键字不被误判为位置参数、JSON 输出、退出码、
+`JYKJ_OCR_PORT` 默认端口)。
 
-端到端接口测试(需联网与 API key,非 CI 基线):
+端到端接口测试(需联网与真实模型,非 CI 基线):
 
 ```bash
+# 全场景演示脚本
 export OPENAI_API_KEY=...  OPENAI_BASE_URL=https://api.siliconflow.cn/v1
-.venv/Scripts/python scripts/test_interfaces.py
+.venv/Scripts/python scripts/demo.py --ci
+
+# 接口 + 全部策略预设的真实模型回归(34 项,约 7 分钟)
+# 会打全部 10 个 HTTP 端点 + 18 个策略预设,结果写 real_model_e2e_result.json
+JYKJ_OCR_PORT=8010 .venv/Scripts/python -m jykj_ocr serve &
+.venv/Scripts/python scripts/real_model_e2e.py http://127.0.0.1:8010 tests/兰亭序.jpeg
+# 退出码 = 失败项数;通过 = 接口契约与策略层在真实远程模型上均可用
 ```
+
+`real_model_e2e.py` 抓到的问题举例:`image_data` 字段文档写的是「完整 data URI」,
+实现却无条件再加一层 `data:` 前缀,导致合法输入变成
+`data:application/octet-stream,data:image/...` 并被 400 拒绝——
+离线测试全绿时这种契约不一致完全看不出来。
 
 ## 项目布局
 
@@ -305,11 +347,11 @@ src/jykj_ocr/
 │   └── registry.py        # build_engine / build_pipeline / apply_strategy_preset / remote_engines / _SEQ_PRESETS
 ├── engines/
 │   ├── rapidocr_engine.py     # RapidOCREngine(适配 1.x/1.4.x/2.x 返回形态)
-│   └── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容;同时注册 siliconflow 别名工厂)
+│   └── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容;注册 multimodal + siliconflow 两个类型)
 ├── cli.py               # argparse CLI
-└── server.py            # FastAPI /ocr /ocr/text /config /engines /health
-config/config.yaml       # 默认引擎 + 策略
-tests/                   # pytest,120 passed
+└── server.py            # FastAPI /ocr /ocr/text /ocr/{preset}(/text) /config /engines /presets /health
+config/config.yaml       # 默认引擎 + 策略(可含多条 multimodal 实例)
+tests/                   # pytest,211 passed
 scripts/                 # 诊断与接口测试脚本
 Dockerfile / docker-compose.yml
 requirements.txt / pyproject.toml

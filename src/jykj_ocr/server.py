@@ -112,6 +112,7 @@ class RuntimeConfig:
                         "enabled": e.enabled,
                         "model": e.model,
                         "base_url": e.base_url,
+                        "api_key": e.api_key,
                         "temperature": e.temperature,
                         "timeout": e.timeout,
                         "max_tokens": e.max_tokens,
@@ -254,7 +255,12 @@ class TextRequest(BaseModel):
                 ),
             )
         if self.image_data is not None:
-            return f"data:application/octet-stream,{self.image_data}"
+            # image_data is a *complete* data URI (see the field doc above), so a
+            # bare prefix would turn it into "data:...,data:image/..." garbage.
+            # Tolerate an unprefixed payload too — callers who have already
+            # stripped the prefix should not need to re-add it.
+            return self.image_data if self.image_data.startswith("data:") \
+                else f"data:image/octet-stream;base64,{self.image_data}"
         if self.image_b64 is not None:
             return f"data:image/octet-stream;base64,{self.image_b64}"
         return self.image_url  # type: ignore[return-value]
@@ -279,6 +285,7 @@ def _engine_raw(engine: EngineConfig) -> Dict[str, Any]:
         "enabled": engine.enabled,
         "model": engine.model,
         "base_url": engine.base_url,
+        "api_key": engine.api_key,
         "temperature": engine.temperature,
         "timeout": engine.timeout,
         "max_tokens": engine.max_tokens,
@@ -521,10 +528,26 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/engines", tags=["配置与状态"],
              summary="可用引擎列表",
-             description="返回所有已注册引擎的描述 + 当前配置文件中的引擎顺序。")
+             description=(
+                 "返回所有已注册引擎的描述 + 当前配置中的引擎清单。`configured` "
+                 "是实例级列表(每个 multimodal 条目各占一行,附带 model/base_url "
+                 "指纹),便于在多实例部署下区分同名引擎。"
+             ))
     async def engines() -> Dict[str, Any]:
         config = state.snapshot()
-        return {"engines": describe_engines(), "configured": [e.name for e in config.engines]}
+        return {
+            "engines": describe_engines(),
+            "configured": [
+                {
+                    "name": e.name,
+                    "resolved_name": e.resolved_name,
+                    "enabled": e.enabled,
+                    "model": e.resolved_model,
+                    "base_url": e.resolved_base_url,
+                }
+                for e in config.engines
+            ],
+        }
 
     @app.get("/presets", tags=["配置与状态"],
              summary="可用策略预设",

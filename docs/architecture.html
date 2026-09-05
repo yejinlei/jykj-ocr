@@ -140,7 +140,7 @@ flowchart TB
     subgraph CONFIG["配置层 config.py"]
         ENV["环境变量&lt;br/&gt;OPENAI_API_KEY / OPENAI_BASE_URL&lt;br/&gt;SILICONFLOW_API_KEY / JYKJ_OCR_*"]
         YAML["config/config.yaml&lt;br/&gt;引擎顺序 + 策略"]
-        PREC["优先级&lt;br/&gt;显式参数 &gt; 环境变量 &gt; YAML &gt; 默认"]
+        PREC["优先级&lt;br/&gt;显式参数 &gt; YAML &gt; 环境变量 &gt; 默认"]
         ENV --&gt; PREC
         YAML --&gt; PREC
     end
@@ -157,14 +157,13 @@ flowchart TB
     subgraph REG["引擎注册表 engine/ (惰性 import)"]
         REGISTRY["registry.py&lt;br/&gt;build_engine / build_strategy"]
         REGISTRY --&gt;|lazy| RAPID_IMP["rapidocr_engine"]
-        REGISTRY --&gt;|lazy| MULTI_IMP["multimodal_engine"]
-        REGISTRY --&gt;|lazy| MULTI_IMP["multimodal_engine&lt;br/&gt;(同时注册 multimodal 与 siliconflow 别名)"]
+        REGISTRY --&gt;|lazy| MULTI_IMP["multimodal_engine&lt;br/&gt;(注册 multimodal + siliconflow 两个类型)"]
     end
 
     subgraph ENGINES["引擎层 engines/"]
         RAPID["RapidOCREngine&lt;br/&gt;本地 ONNX 离线&lt;br/&gt;适配 1.x/1.4.x/2.x"]
-        MULTI["MultimodalEngine&lt;br/&gt;OpenAI 兼容 /chat/completions"]
-        SF["siliconflow 注册别名&lt;br/&gt;同一 MultimodalEngine 实例&lt;br/&gt;默认 PaddleOCR-VL-1.5(注入于 config.py)"]
+        MULTI["MultimodalEngine&lt;br/&gt;OpenAI 兼容 /chat/completions&lt;br/&gt;可实例化任意多条(同厂商多模型/多厂商/多账号)"]
+        SF["siliconflow 独立类型&lt;br/&gt;同一 MultimodalEngine 类&lt;br/&gt;默认 PaddlePaddle/PaddleOCR-VL-1.5(注入于 config.py)"]
         RAPID --&gt;|box+text+score| MODELS_MOD["models.py&lt;br/&gt;TextRegion.from_parts&lt;br/&gt;_UNSET 保留置信度"]
         MULTI --&gt;|text| MODELS_MOD
         SF --&gt;|text| MODELS_MOD
@@ -230,14 +229,14 @@ flowchart TB
           <td><span class="badge key">必需</span></td>
           <td><code>PaddlePaddle/PaddleOCR-VL-1.5</code></td>
           <td><code>sf</code> <code>silicon-flow</code> <code>silicon_flow</code></td>
-          <td>multimodal 的注册别名(同一 MultimodalEngine 实例),默认模型/URL 在 config.py 注入。不设 OPENAI_BASE_URL 时用内置硅基流动默认。</td>
+          <td>独立类型(非别名):共用 <code>MultimodalEngine</code> 类,但自带默认模型与 base URL 注入于 config.py,零配置即可用。不设 <code>OPENAI_BASE_URL</code> 时用内置硅基流动默认。</td>
         </tr>
         <tr>
           <td><code>multimodal</code></td><td>远程多模态</td>
           <td><span class="badge key">必需</span></td>
           <td>由 config 指定</td>
-          <td><code>multi</code> <code>openai</code> <code>openai-compat</code> <code>llm</code></td>
-          <td>通用 OpenAI 兼容端点,适配任意平台。base_url 留空时走 <code>OPENAI_BASE_URL</code>;两者皆无则报错(不静默回退硅基流动)。</td>
+          <td><code>multi</code> <code>openai</code> <code>openai-compat</code> <code>openai-compatible</code> <code>llm</code> <code>sf</code> <code>silicon-flow</code> <code>silicon_flow</code></td>
+          <td>通用 OpenAI 兼容端点,适配任意平台。<strong>一个类型、无限实例</strong>:config.yaml 可写任意多条,每条由 <code>(base_url, model, api_key)</code> 区分并各自实例化;完全相同的六条 tuple 在解析时合并(第一条胜出)。base_url 留空时走 <code>OPENAI_BASE_URL</code>;两者皆无则报错(不静默回退硅基流动)。</td>
         </tr>
       </tbody>
     </table>
@@ -283,13 +282,18 @@ OCRResult(text, regions, engine, model, elapsed_ms)
       <h3>优先级(高 → 低)</h3>
       <pre><code>1. 显式参数
      --engine / ocr(engine=...)
-2. 环境变量
+2. config/config.yaml
+3. 环境变量
      JYKJ_OCR_*
      JYKJ_OCR_&lt;NAME&gt;_API_KEY
      &lt;NAME&gt;_API_KEY
      OPENAI_API_KEY / OPENAI_BASE_URL
-3. config/config.yaml
 4. 内置默认值</code></pre>
+      <p style="font-size:0.85rem;color:var(--muted);margin-top:0.6rem;">
+        方向与直觉相反,但这是代码实现:三个 <code>resolved_*</code> 都是「yaml 有值就用
+        yaml,留空才回退环境变量」。想让 <code>OPENAI_BASE_URL</code> 决定平台,把
+        <code>config.yaml</code> 里的 <code>base_url</code> 留空。
+        <code>.env</code> 只在进程启动时读一次,改完需重启服务。</p>
     </div>
   </div>
 
@@ -299,7 +303,7 @@ OCRResult(text, regions, engine, model, elapsed_ms)
       <thead><tr><th>方法</th><th>路径</th><th>说明</th><th>异常 → HTTP</th></tr></thead>
       <tbody>
         <tr><td><code>GET</code></td><td><code>/health</code></td><td>健康检查</td><td>—</td></tr>
-        <tr><td><code>GET</code></td><td><code>/engines</code></td><td>可用引擎 + 配置顺序</td><td>—</td></tr>
+        <tr><td><code>GET</code></td><td><code>/engines</code></td><td>可用引擎 + <strong>实例级</strong>配置清单(每条 multimodal 各占一行,含 model/base_url 指纹)</td><td>—</td></tr>
         <tr><td><code>GET</code></td><td><code>/config</code></td><td>当前配置(<strong>不回显 key</strong>,仅 has_api_key)</td><td>—</td></tr>
         <tr><td><code>POST</code></td><td><code>/config</code></td><td>运行时覆盖(引擎/模型/策略),不重启</td><td>ValueError → 400</td></tr>
         <tr><td><code>DELETE</code></td><td><code>/config</code></td><td>清除运行时覆盖</td><td>—</td></tr>

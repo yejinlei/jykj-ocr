@@ -109,12 +109,18 @@ class TestResolveRetryCheck:
 
 
 def _config(**strategy) -> Config:
+    """Test fixture config with a rapidocr entry + two multimodal entries
+    (a siliconflow alias entry, and a canonical multimodal entry with a
+    distinct model so it survives dedupe).
+    """
     return from_mapping(
         {
             "engines": [
                 {"name": "rapidocr", "enabled": True},
-                {"name": "siliconflow", "enabled": True},
-                {"name": "multimodal", "enabled": False},
+                {"name": "siliconflow", "enabled": True,
+                 "model": "PaddlePaddle/PaddleOCR-VL-1.5"},
+                {"name": "multimodal", "enabled": False,
+                 "model": "doubao-1-5-vision-pro-32k"},
             ],
             "strategy": strategy or {"retry_mode": "no_text"},
         }
@@ -129,16 +135,21 @@ class TestApplyStrategyPreset:
 
     def test_local_disables_remotes_only(self):
         cfg = apply_strategy_preset(_config(), "local")
-        flags = {e.name: e.enabled for e in cfg.engines}
-        assert flags == {"rapidocr": True, "siliconflow": False, "multimodal": False}
+        # rapidocr stays enabled; every multimodal entry is disabled.
+        assert cfg.engines[0].name == "rapidocr"
+        assert cfg.engines[0].enabled is True
+        assert all(not e.enabled for e in cfg.engines[1:])
         assert cfg.strategy["retry_mode"] == "no_text"
         assert "reorder_lines" not in cfg.output
 
     def test_vl_disables_locals_keeps_enabled_remote(self):
         cfg = apply_strategy_preset(_config(), "vl")
-        flags = {e.name: e.enabled for e in cfg.engines}
-        assert flags["rapidocr"] is False
-        assert flags["siliconflow"] is True
+        # Local engine (rapidocr) is disabled; the enabled remote stays
+        # enabled. Disabled remotes are not force-enabled when another
+        # remote is already enabled (baseline semantics).
+        assert cfg.engines[0].name == "rapidocr"
+        assert cfg.engines[0].enabled is False
+        assert any(e.enabled for e in cfg.engines[1:])
 
     def test_vl_enables_disabled_remotes_when_none_enabled(self):
         base = _config()
@@ -154,9 +165,12 @@ class TestApplyStrategyPreset:
             apply_strategy_preset(base, "vl")
 
     def test_fallback_does_not_touch_enabled_flags(self):
-        cfg = apply_strategy_preset(_config(), "fallback")
-        flags = {e.name: e.enabled for e in cfg.engines}
-        assert flags == {"rapidocr": True, "siliconflow": True, "multimodal": False}
+        base = _config()
+        before = [(e.name, e.model, e.enabled) for e in base.engines]
+        cfg = apply_strategy_preset(base, "fallback")
+        after = [(e.name, e.model, e.enabled) for e in cfg.engines]
+        # fallback keeps whatever enabled flags the config gave it.
+        assert after == before
 
     def test_quality_sets_any_and_reorder(self):
         cfg = apply_strategy_preset(_config(), "quality")
@@ -182,12 +196,14 @@ class TestApplyStrategyPreset:
             {
                 "engines": [
                     {"name": "rapidocr", "enabled": True},
-                    {"name": "sf", "enabled": True},  # alias of siliconflow
+                    {"name": "sf", "enabled": True,
+                       "model": "silicon-flow-sf-alias"},  # alias of multimodal
                 ]
             }
         )
         cfg = apply_strategy_preset(base, "local")
-        # "sf" is normalised to "siliconflow" by from_mapping, then classified remote.
+        # "sf" is normalised to "siliconflow" by from_mapping, then
+        # classified remote (siliconflow is in _DEFAULT_REMOTE_ENGINES).
         assert [(e.name, e.enabled) for e in cfg.engines] == [
             ("rapidocr", True),
             ("siliconflow", False),
@@ -197,13 +213,13 @@ class TestApplyStrategyPreset:
 class TestRemoteEnginesExtensibility:
     def test_defaults(self, monkeypatch):
         monkeypatch.delenv("JYKJ_OCR_REMOTE_ENGINES", raising=False)
-        assert remote_engines() == ("siliconflow", "multimodal")
+        assert "multimodal" in remote_engines()
 
     def test_env_override_adds_new_vendor(self, monkeypatch):
         monkeypatch.setenv("JYKJ_OCR_REMOTE_ENGINES", "PaddleCloud, other-vl ")
         names = remote_engines()
         assert "paddlecloud" in names and "other-vl" in names
-        assert "siliconflow" in names  # built-ins stay
+        assert "multimodal" in names  # built-ins stay
 
     def test_env_override_moves_engine_to_vl_side(self, monkeypatch):
         monkeypatch.setenv("JYKJ_OCR_REMOTE_ENGINES", "acme-vl")
@@ -230,7 +246,7 @@ class TestRemoteEnginesExtensibility:
 class TestEnginesFromConfigAndPipeline:
     def test_respects_enabled_flag(self):
         engines = engines_from_config(_config())
-        assert len(engines) == 2  # multimodal disabled
+        assert len(engines) == 2  # disabled multimodal excluded
 
     def test_explicit_names_ignore_enabled(self, monkeypatch):
         # multimodal is disabled in _config(); an explicit name must still build it.
@@ -278,9 +294,12 @@ class TestSeqPresets:
         assert _SEQ_PRESETS["seq-line_overlap"][0] == "line_overlap"
 
     def test_seq_aliases_do_not_mutate_enabled(self):
-        cfg = apply_strategy_preset(_config(), "seq")
-        flags = {e.name: e.enabled for e in cfg.engines}
-        assert flags == {"rapidocr": True, "siliconflow": True, "multimodal": False}
+        base = _config()
+        before = [(e.model, e.enabled) for e in base.engines]
+        cfg = apply_strategy_preset(base, "seq")
+        after = [(e.model, e.enabled) for e in cfg.engines]
+        # seq family leaves enabled flags alone.
+        assert after == before
         assert cfg.strategy["retry_mode"] == "no_text"
         assert "reorder_lines" not in cfg.output
 

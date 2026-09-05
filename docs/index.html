@@ -223,7 +223,9 @@ python -m jykj_ocr serve --port 8000</code>
       <li><code>/ocr/{preset}</code> 支持 <code>retry_mode</code> / <code>score_mode</code> / <code>max_retries</code> 三旋钮,单次请求覆盖预设默认</li>
       <li><code>cascade*</code> 家族:被 reject 的尝试立刻降级下一引擎,不重试同一引擎</li>
       <li>所有引擎统一走 <code>BaseEngine.recognise</code> 的墙钟超时(rapidocr 与远程),默认 120s,可用 <code>EngineConfig.timeout</code> 覆盖,<code>timeout&lt;=0</code> 关闭</li>
-      <li>pytest 离线测试基线 173 passed</li>
+      <li><code>pytest</code> 离线测试基线 211 passed</li>
+      <li>真实模型 E2E <code>scripts/real_model_e2e.py</code>:34 项全部通过(16 个接口 + 18 个策略预设,~436s),模力方舟 <code>https://api.moark.com/v1</code> 的 <code>PaddleOCR-VL-1.5</code> 与 <code>Qwen3-VL-30B-A3B-Instruct</code> 在线实测</li>
+      <li>该轮 E2E 抓到并修复:<code>image_data</code> 双前缀缺陷(文档写「完整 data URI」,实现又加一层 <code>data:</code>),已加 5 个回归用例</li>
       <li>GET /config 实测 <code>key_leaked=False</code></li>
     </ul>
   </main>

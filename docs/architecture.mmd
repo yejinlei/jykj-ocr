@@ -10,7 +10,7 @@ flowchart TB
     subgraph CONFIG["配置层 config.py"]
         ENV["环境变量<br/>OPENAI_API_KEY / OPENAI_BASE_URL<br/>SILICONFLOW_API_KEY / JYKJ_OCR_*"]
         YAML["config/config.yaml<br/>引擎顺序 + 策略"]
-        PREC["优先级<br/>显式参数 > 环境变量 > YAML > 默认"]
+        PREC["优先级<br/>显式参数 > YAML > 环境变量 > 默认"]
         ENV --> PREC
         YAML --> PREC
     end
