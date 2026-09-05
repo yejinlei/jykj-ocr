@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Command-line entry point.
 
-    python -m jykj_ocr image.png --engine siliconflow
+    python -m jykj_ocr image.png --engine rapidocr
     python -m jykj_ocr doc.pdf --engine rapidocr --format markdown -o out.md
     python -m jykj_ocr --list-engines
     python -m jykj_ocr serve --port 8000
@@ -26,7 +26,7 @@ def _load_dotenv(path: str = ".env") -> None:
     """Load a ``.env`` file into the environment (best-effort, stdlib only).
 
     Existing environment variables always win, so this never overrides an
-    explicit ``SILICONFLOW_API_KEY`` export.
+    explicit ``OPENAI_API_KEY`` export.
     """
     if not os.path.isfile(path):
         return
@@ -58,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-c", "--config", help="配置文件路径（默认 config/config.yaml）")
     parser.add_argument(
         "--engine",
-        help="指定引擎，忽略配置中的策略链；如 rapidocr / siliconflow / multimodal",
+        help="指定引擎，忽略配置中的策略链；如 rapidocr / multimodal",
     )
     parser.add_argument(
         "--strategy-name",

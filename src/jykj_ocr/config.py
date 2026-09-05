@@ -22,9 +22,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-#: SiliconFlow's default OpenAI-compatible base URL.
-SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
-
 #: Prefix for the ``JYKJ_OCR_*`` environment variables.
 _ENV_PREFIX = "JYKJ_OCR"
 
@@ -59,10 +56,10 @@ ENGINE_ALIASES: Dict[str, str] = {
     "rapid": "rapidocr",
     "rapid-ocr": "rapidocr",
     "rapidocr-onnx": "rapidocr",
-    "sf": "siliconflow",
-    "silicon-flow": "siliconflow",
-    "silicon_flow": "siliconflow",
-    "siliconflow": "siliconflow",
+    "sf": "multimodal",
+    "silicon-flow": "multimodal",
+    "silicon_flow": "multimodal",
+    "siliconflow": "multimodal",
     "multi": "multimodal",
     "multimodal": "multimodal",
     "openai": "multimodal",
@@ -102,37 +99,32 @@ class EngineConfig:
     def resolved_base_url(self) -> str:
         """Resolve the base URL, checking env vars first.
 
-        Order: explicit config -> ``OPENAI_BASE_URL`` (standard OpenAI SDK env
-        var, so the same token works with any provider the user picks) ->
-        engine-specific default (siliconflow). This keeps the remote engines
-        provider-agnostic: set ``OPENAI_BASE_URL`` once and point it at any
-        OpenAI-compatible endpoint.
+        Order: explicit config -> ``OPENAI_BASE_URL`` (the standard OpenAI SDK
+        env var, so one token can point at any provider). There is deliberately
+        no engine-specific URL default: every remote instance must name its
+        endpoint either here or via ``OPENAI_BASE_URL``, otherwise a key for
+        provider A could be silently sent to provider B.
         """
         if self.base_url:
             return self.base_url.rstrip("/")
         env_base = os.getenv("OPENAI_BASE_URL")
-        if env_base:
-            return env_base.rstrip("/")
-        if self.resolved_name == "siliconflow":
-            return SILICONFLOW_BASE_URL
-        return ""
+        return env_base.rstrip("/") if env_base else ""
 
     @property
     def resolved_model(self) -> str:
         """Resolve the model name, checking env vars first.
 
-        Order: explicit config -> ``JYKJ_OCR_<NAME>_MODEL`` -> engine-specific
-        default (siliconflow). Mirrors :attr:`resolved_api_key` so an operator
-        can swap the model per deployment (e.g. ``JYKJ_OCR_SILICONFLOW_MODEL=
-        moonshotai/Kimi-K2.7-Code``) without editing the config file.
+        Order: explicit config -> ``JYKJ_OCR_<NAME>_MODEL``. Models are
+        platform-specific, so there is no engine-level default: an operator
+        can still swap models per deployment via the env var (e.g.
+        ``JYKJ_OCR_MULTIMODAL_MODEL=moonshotai/Kimi-K2.7-Code``) without
+        editing the config file.
         """
         if self.model:
             return self.model
         upper = self.resolved_name.upper().replace("-", "_").replace(".", "_")
         env_model = os.getenv(f"{_ENV_PREFIX}_{upper}_MODEL")
-        if env_model:
-            return env_model
-        return "PaddlePaddle/PaddleOCR-VL-1.5" if self.resolved_name == "siliconflow" else ""
+        return env_model or ""
 
     @property
     def resolved_api_key(self) -> str:
@@ -183,7 +175,7 @@ class EngineConfig:
 
     @property
     def resolved_name(self) -> str:
-        """Canonical engine id after alias folding (e.g. ``sf`` → ``siliconflow``)."""
+        """Canonical engine id after alias folding (e.g. ``sf`` → ``multimodal``)."""
         return normalise_engine(self.name)
 
 
@@ -341,7 +333,6 @@ def load_prompt(path: str) -> str:
 __all__ = [
     "Config",
     "EngineConfig",
-    "SILICONFLOW_BASE_URL",
     "load_config",
     "load_prompt",
     "from_mapping",

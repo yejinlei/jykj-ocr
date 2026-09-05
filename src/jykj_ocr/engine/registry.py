@@ -30,7 +30,7 @@ from . import base as engine_pkg
 #: presets, so new engines (PaddleOCR, Tesseract, cloud vendors...) need no
 #: change here: register them and ``local``/``vl`` pick them up automatically.
 #: Set ``JYKJ_OCR_REMOTE_ENGINES="a,b"`` to add more remote names.
-_DEFAULT_REMOTE_ENGINES = ("siliconflow", "multimodal")
+_DEFAULT_REMOTE_ENGINES = ("multimodal",)
 
 
 def remote_engines() -> tuple:
@@ -304,7 +304,7 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
         if not any(e.enabled for e in remotes):
             if not remotes:
                 raise ValueError(
-                    "strategy 'vl' needs a remote engine (siliconflow/multimodal) "
+                    "strategy 'vl' needs a remote engine (multimodal) "
                     "configured; none found"
                 )
             for engine in remotes:

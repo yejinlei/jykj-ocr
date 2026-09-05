@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """OpenAI-compatible multimodal OCR engine.
 
-Works with SiliconFlow and any provider exposing
-``POST /chat/completions`` with ``image_url`` content parts. The
-``siliconflow`` engine is a registration alias for this class (see
-``_siliconflow_factory`` below); its defaults are injected by
-``EngineConfig.resolved_*`` in config.py, not by a subclass.
+Works with SiliconFlow, 模力方舟, 阿里云百炼, 火山方舟, local vLLM — any provider
+exposing ``POST /chat/completions`` with ``image_url`` content parts. There is
+exactly one engine type, ``multimodal``; a specific platform is an entry in the
+config (``base_url`` + ``model``), not a separate engine. SiliconFlow shows up in
+docs as an example entry, not as its own engine.
 
 Only ``requests`` is required — no ``openai`` SDK dependency, which keeps the
 image small and avoids SDK churn.
@@ -17,7 +17,7 @@ import base64
 import logging
 from typing import Any, Dict, List
 
-from ..config import EngineConfig, load_prompt, normalise_engine
+from ..config import EngineConfig, load_prompt
 from ..engine.base import (
     MAX_IMAGE_BYTES,
     BaseEngine,
@@ -36,8 +36,11 @@ DEFAULT_PROMPT = (
     "如果是表格，请用 Markdown 表格输出。"
 )
 
-DEFAULT_MODEL = "PaddlePaddle/PaddleOCR-VL-1.5"
-DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
+#: PaddleOCR-VL-1.5 is the OCR model this project is built around. Kept as the
+#: last-resort default so a ``multimodal`` entry without ``model`` still issues
+#: a valid request; the per-platform model ID should come from config instead
+#: (模力方舟 wants the bare ID, 硅基流动 wants the vendor-prefixed one).
+DEFAULT_MODEL = "PaddleOCR-VL-1.5"
 DEFAULT_IMAGE_FORMAT = "png"
 
 
@@ -77,23 +80,19 @@ class MultimodalEngine(BaseEngine):
 
     def __init__(self, config: EngineConfig) -> None:
         super().__init__(config)
-        # Set before anything can call engine_id(): the config name decides
-        # which platform this instance talks to ("multimodal" generic vs the
-        # "siliconflow" alias, whose defaults are filled in config.py).
-        self._engine_id = normalise_engine(config.name)
+        # Result tagging only: every remote instance reports engine="multimodal".
+        self._engine_id = "multimodal"
         self.model_name = config.resolved_model or DEFAULT_MODEL
-        # ``resolved_base_url`` already checks config -> OPENAI_BASE_URL ->
-        # siliconflow default. A bare ``multimodal`` engine with none of the
-        # three must not silently fall back to SiliconFlow (that would route a
-        # different provider's key to the wrong endpoint); require an explicit
-        # URL instead.
+        # No engine-specific fallback: sending a key for provider A to provider B
+        # surfaces as an opaque HTTP 401, so an unnamed endpoint must fail here
+        # instead.
         base = config.resolved_base_url
-        if not base and self.engine_id() != "siliconflow":
+        if not base:
             raise EngineNotAvailable(
                 "no base URL for multimodal engine. Set OPENAI_BASE_URL "
                 "(or base_url in the engine config)."
             )
-        self.base_url = (base or DEFAULT_BASE_URL).rstrip("/")
+        self.base_url = base.rstrip("/")
         self.api_key = config.resolved_api_key
         self.temperature = float(getattr(config, "temperature", 0.0) or 0.0)
         self.timeout = float(getattr(config, "timeout", 120.0) or 120.0)
@@ -121,8 +120,8 @@ class MultimodalEngine(BaseEngine):
             )
         if not self.api_key:
             raise EngineNotAvailable(
-                f"no API key for '{self.engine_id()}'. Set SILICONFLOW_API_KEY, "
-                "OPENAI_API_KEY, or api_key in the engine config."
+                f"no API key for '{self.engine_id()}'. Set OPENAI_API_KEY, "
+                "JYKJ_OCR_MULTIMODAL_API_KEY, or api_key in the engine config."
             )
         try:
             import requests  # type: ignore
@@ -254,16 +253,6 @@ class MultimodalEngine(BaseEngine):
 
 @register("multimodal")
 def _multimodal_factory(config: EngineConfig) -> MultimodalEngine:
-    return MultimodalEngine(config)
-
-
-@register("siliconflow")
-def _siliconflow_factory(config: EngineConfig) -> MultimodalEngine:
-    # ``siliconflow`` is a name alias, not a subclass: the defaults
-    # (base_url / model) are injected by EngineConfig.resolved_* in config.py,
-    # and normalise_engine(name) keeps results tagged engine="siliconflow".
-    if not config.name:
-        config.name = "siliconflow"
     return MultimodalEngine(config)
 
 

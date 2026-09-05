@@ -16,7 +16,7 @@ or ``python -m jykj_ocr serve`` (port from ``JYKJ_OCR_PORT``).
 
 Credentials are never hardcoded; they come from the environment
 (``OPENAI_API_KEY`` / ``OPENAI_BASE_URL``, or engine-specific
-``SILICONFLOW_API_KEY``) or ``config/config.yaml``.
+``OPENAI_API_KEY``) or ``config/config.yaml``.
 """
 
 from __future__ import annotations
@@ -205,7 +205,7 @@ class TextRequest(BaseModel):
             "例:`\"data:image/png;base64,iVBORw0KGgo...\"`。"
         ),
     )
-    engine: Optional[str] = Field(None, description="强制单引擎(如 rapidocr / siliconflow),覆盖 strategy")
+    engine: Optional[str] = Field(None, description="强制单引擎(如 rapidocr / multimodal),覆盖 strategy")
     max_pages: Optional[int] = Field(None, description="PDF 页数上限")
     dpi: int = Field(200, description="PDF 渲染 DPI")
     format: str = Field("json", description="输出格式:json / text / markdown")
@@ -577,14 +577,14 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
                   "部分覆盖运行时配置:设置模型、引擎、策略等,无需重启。"
                   "把字段设为 null 可还原为配置文件中的值。可覆盖的顶层键:"
                   "engines / strategy / output / pdf。"
-                  "\n\n示例: {\"engines\": [{\"name\": \"siliconflow\", \"model\": \"qwen-vl-max\"}]} 或 {\"strategy\": {\"max_retries\": 2}}"
+                  "\n\n示例: {\"engines\": [{\"name\": \"multimodal\", \"model\": \"qwen-vl-max\"}]} 或 {\"strategy\": {\"max_retries\": 2}}"
               ),
               responses={400: {"description": "不支持的配置键或值非法"}},
               openapi_extra={
                   "examples": {
                       "切换模型": {
-                          "summary": "切换 siliconflow 模型",
-                          "value": {"engines": [{"name": "siliconflow", "model": "qwen-vl-max"}]},
+                          "summary": "切换 multimodal 模型",
+                          "value": {"engines": [{"name": "multimodal", "model": "qwen-vl-max"}]},
                       },
                       "调整重试策略": {
                           "summary": "低置信度时多重试一次",
@@ -598,7 +598,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         例::
 
             POST /config
-            {"engines": [{"name": "siliconflow", "model": "qwen-vl-max"}]}
+            {"engines": [{"name": "multimodal", "model": "qwen-vl-max"}]}
 
         例（把快速引擎放在前面）::
 
@@ -731,7 +731,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     @app.post("/ocr/{preset}", tags=["OCR 识别"],
           summary="路由即策略:上传文件",
           description=(
-              "preset 路径参数自动识别:匹配已注册引擎名(如 rapidocr/siliconflow)等价于"
+              "preset 路径参数自动识别:匹配已注册引擎名(如 rapidocr/multimodal)等价于"
               "强制单引擎;匹配策略预设名(如 local/vl/seq/bestof/fallback/quality)等价于"
               "strategy_name=preset;bestof:<mode> 冒号语法也支持。"
               "其他值返回 404 并列出全部可用选项。"
@@ -754,7 +754,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         """路由即策略的专用接口：``POST /ocr/{preset}``。
 
         ``preset`` 路径参数自动识别:
-          - 若匹配已注册引擎名(rapidocr / siliconflow / multimodal),等价于
+          - 若匹配已注册引擎名(rapidocr / multimodal),等价于
             ``POST /ocr ... -F engine=preset``(强制单引擎);
           - 否则按策略预设名(local / vl / seq* / cascade* / bestof* / legacy 别名 /
             bestof:<mode>)处理,等价于 ``strategy_name=preset``。
@@ -762,7 +762,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         例::
 
             POST /ocr/rapidocr         # 只跑 rapidocr
-            POST /ocr/siliconflow      # 只跑硅基流动
+            POST /ocr/multimodal       # 只跑远程多模态
             POST /ocr/bestof           # 所有引擎择优
             POST /ocr/bestof-fluency   # 语义流畅度优先
             POST /ocr/cascade          # 首个不达标立即降级到下一引擎(不重试)
@@ -770,7 +770,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             POST /ocr/vl               # 仅远程大模型
 
         模型 / prompt / 格式 / 策略旋钮等仍可覆盖:
-            POST /ocr/siliconflow ... -F "model=qwen-vl-max" -F "format=text"
+            POST /ocr/multimodal ... -F "model=qwen-vl-max" -F "format=text"
             POST /ocr/seq     ... -F "retry_mode=line_overlap"
             POST /ocr/bestof  ... -F "score_mode=fastest"
             POST /ocr/seq     ... -F "max_retries=0"   # 等价于 cascade

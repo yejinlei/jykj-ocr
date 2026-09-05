@@ -96,16 +96,17 @@
   </section>
 
   <main>
-    <h2>三引擎对照</h2>
+    <h2>引擎对照</h2>
     <table>
       <thead><tr><th>引擎</th><th>类型</th><th>API Key</th><th>默认模型</th></tr></thead>
       <tbody>
         <tr><td><code>rapidocr</code></td><td>本地 ONNX</td><td><span style="color:var(--green)">无需</span></td><td>—</td></tr>
-        <tr><td><code>siliconflow</code></td><td>远程多模态</td><td><span style="color:var(--orange)">必需</span></td><td><code>PaddlePaddle/PaddleOCR-VL-1.5</code></td></tr>
-        <tr><td><code>multimodal</code></td><td>远程多模态</td><td><span style="color:var(--orange)">必需</span></td><td>由 config 指定(回退 PaddleOCR-VL-1.5)</td></tr>
+        <tr><td><code>multimodal</code></td><td>远程多模态</td><td><span style="color:var(--orange)">必需</span></td><td><code>PaddleOCR-VL-1.5</code>(留空时)</td></tr>
       </tbody>
     </table>
-    <p style="color:var(--muted);font-size:0.9rem;">远程引擎统一走 OpenAI 兼容协议(<code>POST /chat/completions</code>),只依赖 <code>requests</code>,不引入 <code>openai</code> SDK。</p>
+    <p style="color:var(--muted);font-size:0.9rem;">远程引擎统一走 OpenAI 兼容协议(<code>POST /chat/completions</code>),只依赖 <code>requests</code>,不引入 <code>openai</code> SDK。<br/>
+    <strong>平台不是引擎</strong>:硅基流动、阿里云百炼、模力方舟、本地 vLLM 等都由条目里的 <code>base_url</code> + <code>model</code> 区分,全项目只有上面两个引擎类型。
+    <code>siliconflow</code> 等名称保留为别名,写法与 <code>multimodal</code> 完全等价。</p>
 
     <h2>引擎使用策略</h2>
     <p style="color:var(--muted);font-size:0.92rem;margin-bottom:0.5rem;">配置固定默认策略,单次请求可用 <code>strategy_name</code>(CLI <code>--strategy-name</code> / API 参数 / HTTP 表单或 JSON 字段)一次性覆盖,不改动服务端配置。</p>
@@ -137,7 +138,7 @@
         <tr><td><code>bestof:&lt;mode&gt;</code></td><td>同以上任意 mode</td><td>冒号语法别名</td></tr>
       </tbody>
     </table>
-    <p style="color:var(--muted);font-size:0.88rem;margin-top:0.4rem;"><code>bestof-fluency</code>:短语越长越连贯(+15),有标点更像自然语言(+5),单字/短词碎片扣减(上限 −25)。兰亭序实测 rapidocr fluency≈−23,siliconflow≈+15。</p>
+    <p style="color:var(--muted);font-size:0.88rem;margin-top:0.4rem;"><code>bestof-fluency</code>:短语越长越连贯(+15),有标点更像自然语言(+5),单字/短词碎片扣减(上限 −25)。兰亭序实测 rapidocr fluency≈−23,远程多模态≈+15。</p>
 
     <p style="color:var(--muted);font-size:0.9rem;margin-top:0.6rem;">优先级:单次请求 <code>strategy_name</code> &gt; <code>POST /config</code> 运行时覆盖 &gt; <code>config.yaml</code>。新引擎注册即被预设识别,远程侧用 <code>JYKJ_OCR_REMOTE_ENGINES</code> 标记。</p>
 
@@ -187,7 +188,7 @@ pip install -r requirements.txt<br/><br/>
 export OPENAI_API_KEY=sk-xxx<br/>
 export OPENAI_BASE_URL=https://api.siliconflow.cn/v1<br/><br/>
 <span class="comment"># CLI 识别</span><br/>
-python -m jykj_ocr image.png --engine siliconflow --format json<br/><br/>
+python -m jykj_ocr image.png --engine multimodal --format json<br/><br/>
 <span class="comment"># 一次性命名预设(窜行降级 + 阅读顺序重排)</span><br/>
 python -m jykj_ocr stamp.png --strategy-name quality<br/><br/>
 <span class="comment"># 启动 HTTP 服务</span><br/>
@@ -213,9 +214,9 @@ python -m jykj_ocr serve --port 8000</code>
 
     <h2>实测状态</h2>
     <ul class="feature-list">
-      <li>三引擎在 <code>tests/兰亭序.jpeg</code>(750×1390 中文古文)上全部跑通</li>
+      <li>两引擎在 <code>tests/兰亭序.jpeg</code>(750×1390 中文古文)上全部跑通</li>
       <li>rapidocr 166 区域,置信度 0.97+,离线可用</li>
-      <li>siliconflow / multimodal 均返回完整全文</li>
+      <li>multimodal 在硅基流动(带厂商前缀模型 ID)与模力方舟(裸模型 ID)两个平台上均返回完整全文</li>
       <li>七类命名预设(local/vl/seq*/cascade*/bestof*)在 http://192.168.0.81:8000 实测通过,未知名称返回 400 并列出可选值</li>
       <li><code>GET /presets</code> 返回全部 17 个预设 + <code>bestof:&lt;mode&gt;</code> 别名,含评分模式/重试判定/引擎范围/最大重试次数</li>
       <li><code>/docs</code> 全部 10 个操作按"OCR 识别"/"配置与状态"两组分类展示</li>
@@ -223,7 +224,7 @@ python -m jykj_ocr serve --port 8000</code>
       <li><code>/ocr/{preset}</code> 支持 <code>retry_mode</code> / <code>score_mode</code> / <code>max_retries</code> 三旋钮,单次请求覆盖预设默认</li>
       <li><code>cascade*</code> 家族:被 reject 的尝试立刻降级下一引擎,不重试同一引擎</li>
       <li>所有引擎统一走 <code>BaseEngine.recognise</code> 的墙钟超时(rapidocr 与远程),默认 120s,可用 <code>EngineConfig.timeout</code> 覆盖,<code>timeout&lt;=0</code> 关闭</li>
-      <li><code>pytest</code> 离线测试基线 211 passed</li>
+      <li><code>pytest</code> 离线测试基线 212 passed</li>
       <li>真实模型 E2E <code>scripts/real_model_e2e.py</code>:34 项全部通过(16 个接口 + 18 个策略预设,~436s),模力方舟 <code>https://api.moark.com/v1</code> 的 <code>PaddleOCR-VL-1.5</code> 与 <code>Qwen3-VL-30B-A3B-Instruct</code> 在线实测</li>
       <li>该轮 E2E 抓到并修复:<code>image_data</code> 双前缀缺陷(文档写「完整 data URI」,实现又加一层 <code>data:</code>),已加 5 个回归用例</li>
       <li>GET /config 实测 <code>key_leaked=False</code></li>

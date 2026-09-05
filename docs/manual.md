@@ -29,7 +29,7 @@ flowchart TB
     end
 
     subgraph CONFIG["配置层 config.py"]
-        ENV["环境变量<br/>OPENAI_API_KEY / OPENAI_BASE_URL<br/>SILICONFLOW_API_KEY / JYKJ_OCR_*"]
+        ENV["环境变量<br/>OPENAI_API_KEY / OPENAI_BASE_URL<br/>JYKJ_OCR_*"]
         YAML["config/config.yaml<br/>引擎顺序 + 策略"]
         PREC["优先级<br/>显式参数 > YAML > 环境变量 > 默认"]
         ENV --> PREC
@@ -47,8 +47,7 @@ flowchart TB
 
     subgraph ENGINES["引擎层 engines/"]
         RAPID["RapidOCREngine<br/>本地 ONNX,离线"]
-        MULTI["MultimodalEngine<br/>OpenAI 兼容 /chat/completions<br/>可实例化任意多条"]
-        SF["siliconflow<br/>独立类型,默认 PaddlePaddle/PaddleOCR-VL-1.5"]
+        MULTI["MultimodalEngine<br/>OpenAI 兼容 /chat/completions<br/>任意平台,可实例化任意多条"]
     end
 
     subgraph OUTPUT["输出 models.py"]
@@ -69,11 +68,8 @@ flowchart TB
 
     ORCH --> RAPID
     ORCH --> MULTI
-    ORCH --> SF
-
     RAPID --> RESULT
     MULTI --> RESULT
-    SF --> RESULT
     RESULT --> APP
     RESULT --> PYAPI
     RESULT --> CLI
@@ -88,7 +84,7 @@ flowchart TB
     class CLI,PYAPI,HTTP client
     class ENV,YAML,PREC config
     class STRAT,RETRY,TIMED orch
-    class RAPID,MULTI,SF eng
+    class RAPID,MULTI eng
     class RESULT output
     class APP server
 ```
@@ -103,7 +99,7 @@ sequenceDiagram
     participant R as RuntimeConfig
     participant P as build_pipeline()
     participant E1 as rapidocr 引擎
-    participant E2 as siliconflow 引擎
+    participant E2 as multimodal 引擎
     participant M as models.py<br/>OCRResult
 
     C->>S: POST /ocr (multipart file)
@@ -148,9 +144,9 @@ pip install -e .                 # 可选,注册 jykj-ocr 命令行入口
 
 ```bash
 python -m jykj_ocr --list-engines
-# rapidocr       本地 RapidOCR(ONNX,离线)
-# siliconflow    硅基流动多模态 OCR
-# multimodal     通用 OpenAI 兼容端点
+# rapidocr       本地 RapidOCR (ONNX),无需 API key,离线可用
+# multimodal     OpenAI 兼容多模态端点(硅基流动 / 百炼 / 火山 / vLLM 等任意平台,
+#                可配置多个实例)
 ```
 
 ---
@@ -171,8 +167,8 @@ cp .env.example .env
 | 变量 | 必需 | 作用 |
 |------|:----:|------|
 | `OPENAI_API_KEY` | 远程引擎必需 | 通用 key,适配任意 OpenAI 兼容平台 |
-| `OPENAI_BASE_URL` | 多平台时必需 | 端点 URL;siliconflow 不设时用内置默认。**唯一生效的 base URL 变量,被所有 multimodal 条目共享** |
-| `SILICONFLOW_API_KEY` | 可选 | 仅当 siliconflow 需与 `OPENAI_*` 不同 key 时覆盖 |
+| `OPENAI_BASE_URL` | 远程引擎必需 | 端点 URL。**唯一生效的 base URL 变量,被所有 multimodal 条目共享**;不设就报 `EngineNotAvailable`,不会静默回退到某个平台 |
+
 | `JYKJ_OCR_MULTIMODAL_API_KEY` | 可选 | 所有 `multimodal` 条目共享的 key(按类型命名,不按实例) |
 | `JYKJ_OCR_MULTIMODAL_MODEL` | 可选 | 所有 `multimodal` 条目共享的 model 回退值 |
 | `JYKJ_OCR_CONFIG` | 可选 | 配置文件路径(默认 `config/config.yaml`) |
@@ -212,7 +208,7 @@ engines:
     lang: ch
     enabled: true
 
-  - name: siliconflow        # 硅基流动
+  - name: multimodal         # 硅基流动平台
     model: PaddlePaddle/PaddleOCR-VL-1.5
     base_url: https://api.siliconflow.cn/v1
     temperature: 0.0
@@ -221,9 +217,9 @@ engines:
       请识别图片中的全部文字内容,按原文版面顺序输出。
       只输出文字,不要翻译、不要解释。
 
-  - name: multimodal         # 通用 OpenAI 兼容(留空 base_url 走 OPENAI_BASE_URL)
+  - name: multimodal         # 第二个实例:留空 base_url 走 OPENAI_BASE_URL
     enabled: false
-    model: qwen-vl-max
+    model: qwen-vl-max        # 该平台只认裸模型 ID,不带厂商前缀
 ```
 
 ### 3.3 配置优先级
@@ -244,8 +240,8 @@ flowchart LR
 
 | 字段 | yaml | 环境变量 | 默认值 |
 |------|------|----------|--------|
-| `base_url` | `base_url:` | `OPENAI_BASE_URL` | siliconflow 内置 URL |
-| `model` | `model:` | `JYKJ_OCR_<NAME>_MODEL` | siliconflow 内置模型 |
+| `base_url` | `base_url:` | `OPENAI_BASE_URL` | **无**——解析不出来即 `EngineNotAvailable` |
+| `model` | `model:` | `JYKJ_OCR_<NAME>_MODEL` | `PaddleOCR-VL-1.5`(裸 ID) |
 | `api_key` | `api_key:` | `JYKJ_OCR_<NAME>_API_KEY` → `<NAME>_API_KEY` → `OPENAI_API_KEY` | 空 |
 
 **实务后果**:如果 `config.yaml` 里写了 `base_url: https://a.com/v1`,而 `.env` 里写了
@@ -269,7 +265,7 @@ docker run --rm -p 8000:8000 --env-file .env jykj_ocr
 
 # 容器内一次性任务
 docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
-    python -m jykj_ocr /data/scan.png --engine siliconflow
+    python -m jykj_ocr /data/scan.png --engine multimodal
 ```
 
 ```mermaid
@@ -305,7 +301,7 @@ flowchart TB
 .venv/Scripts/python -m pytest tests -q
 ```
 
-- **CI 基线**:211 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
+- **CI 基线**:212 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
 - 覆盖:models、config(别名归一化、YAML、环境变量优先级、多 multimodal 实例去重)、
   strategy、engines(multimodal OpenAI 响应解析、rapidocr 1.x/1.4.x/2.x 返回形态)、
   策略预设(local/vl/seq*/cascade*/bestof*、deepcopy 不变性、`JYKJ_OCR_REMOTE_ENGINES` 扩展)、
@@ -524,7 +520,7 @@ print(f"共 {len(results)} 页,总计 {len(full_text)} 字")
 
 ```python
 # 需提前设置 OPENAI_API_KEY
-results = jykj_ocr.ocr("scan.png", engine="siliconflow")
+results = jykj_ocr.ocr("scan.png", engine="multimodal")
 for r in results:
     print(f"引擎={r.engine} 模型={r.model} 区域数={len(r.regions)}")
     print(r.text)
@@ -601,7 +597,7 @@ JYKJ_OCR_PORT=8000 python -m uvicorn jykj_ocr.server:app --host 0.0.0.0
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|:----:|------|
 | `file` | File | ✅ | 图片或 PDF 文件 |
-| `engine` | string | — | 强制指定引擎(如 `rapidocr`/`siliconflow`) |
+| `engine` | string | — | 强制指定引擎(如 `rapidocr`/`multimodal`) |
 | `model` | string | — | 覆盖模型名(仅远程引擎生效) |
 | `prompt` | string | — | 覆盖 prompt(仅远程引擎生效) |
 | `strategy` | JSON string | — | 临时策略对象(如 `{"retry_mode":"any","max_retries":2}`) |
@@ -640,7 +636,7 @@ sequenceDiagram
 # 上传本地图片,指定引擎和输出格式
 curl -s http://localhost:8000/ocr \
   -F "file=@scan.png" \
-  -F "engine=siliconflow" \
+  -F "engine=multimodal" \
   -F "format=json"
 
 # 上传 PDF,只处理前 5 页,300 DPI
@@ -655,7 +651,7 @@ curl -s http://localhost:8000/ocr/bestof \
   -F "format=json"
 
 # 路由 + 覆盖模型
-curl -s http://localhost:8000/ocr/siliconflow \
+curl -s http://localhost:8000/ocr/multimodal \
   -F "file=@scan.png" \
   -F "model=Qwen/Qwen2.5-VL-72B" \
   -F "format=text"
@@ -928,7 +924,7 @@ curl -s -X POST http://localhost:8000/ocr/text \
   -H "Content-Type: application/json" \
   -d '{
     "image_url": "https://example.com/scan.png",
-    "engine": "siliconflow",
+    "engine": "multimodal",
     "format": "markdown"
   }'
 ```
@@ -936,7 +932,7 @@ curl -s -X POST http://localhost:8000/ocr/text \
 ```text
 # 识别结果 - 第 1 页
 
-- **engine**: siliconflow
+- **engine**: multimodal
 - **model**: PaddlePaddle/PaddleOCR-VL-1.5
 - **elapsed_ms**: 8500
 - **size**: 800 × 1200
@@ -998,7 +994,7 @@ curl -s http://localhost:8000/config
 {
   "engines": [
     {"name": "rapidocr", "enabled": true, "model": "", "base_url": ""},
-    {"name": "siliconflow", "enabled": true, "model": "PaddlePaddle/PaddleOCR-VL-1.5", "base_url": "https://api.siliconflow.cn/v1"},
+    {"name": "multimodal", "enabled": true, "model": "PaddlePaddle/PaddleOCR-VL-1.5", "base_url": "https://api.siliconflow.cn/v1"},
     {"name": "multimodal", "enabled": false}
   ],
   "strategy": {"max_retries": 1, "retry_mode": "no_text", "min_confidence": 0.7},
@@ -1011,7 +1007,7 @@ curl -s http://localhost:8000/config
 # 切换模型(不回显 key)
 curl -s -X POST http://localhost:8000/config \
   -H "Content-Type: application/json" \
-  -d '{"engines":[{"name":"siliconflow","model":"Qwen/Qwen2.5-VL-72B"}]}'
+  -d '{"engines":[{"name":"multimodal","model":"Qwen/Qwen2.5-VL-72B"}]}'
 
 # 调整策略
 curl -s -X POST http://localhost:8000/config \
@@ -1029,11 +1025,12 @@ curl -s -X DELETE http://localhost:8000/config
 ```bash
 # 健康检查
 curl -s http://localhost:8000/health
-# {"status":"ok","engines":["rapidocr","siliconflow","multimodal"]}
+# {"status":"ok","engines":["rapidocr","multimodal"]}
 
 # 引擎列表
 curl -s http://localhost:8000/engines
-# {"engines":{"rapidocr":"本地 RapidOCR...","siliconflow":"硅基流动多模态...","multimodal":"通用 OpenAI 兼容..."},
+# {"engines":{"rapidocr":"本地 RapidOCR (ONNX),无需 API key,离线可用",
+#             "multimodal":"OpenAI 兼容多模态端点(硅基流动 / 百炼 / 火山 / vLLM 等任意平台,可配置多个实例)"},
  "configured":[{"name":"rapidocr","resolved_name":"rapidocr","enabled":true,"model":"","base_url":""},
               {"name":"multimodal","resolved_name":"multimodal","enabled":true,
                "model":"PaddleOCR-VL-1.5","base_url":"https://api.moark.com/v1"}]}
@@ -1064,8 +1061,8 @@ flowchart LR
 | 异常 | HTTP 状态码 | 典型场景 | 响应示例 |
 |------|:----:|------|------|
 | `InputError` | 400 | 文件不存在、图片损坏、URL 无法下载、base64 解码失败 | `{"detail":"input not found: /tmp/x.png"}` |
-| `EngineNotAvailable` | 422 | 缺少依赖库、API key 为空、base_url 未配置 | `{"detail":"siliconflow requires OPENAI_API_KEY"}` |
-| `EngineError` | 502 | 引擎调用超时、HTTP 402 余额不足、网络错误 | `{"detail":"HTTP 402","engine":"siliconflow"}` |
+| `EngineNotAvailable` | 422 | 缺少依赖库、API key 为空、base_url 未配置 | `{"detail":"multimodal requires OPENAI_API_KEY"}` |
+| `EngineError` | 502 | 引擎调用超时、HTTP 402 余额不足、网络错误 | `{"detail":"HTTP 402","engine":"multimodal"}` |
 | `StrategyError` | 422 | 策略链中所有引擎均失败且无可用结果 | `{"detail":"all engines exhausted"}` |
 | 未知 preset | 404 | `/ocr/xxx` 路由既非引擎也非策略预设 | `{"detail":"unknown preset 'xxx'..."}` |
 | 格式错误 | 400 | 图片三选一只传一个、format 非法、strategy JSON 非对象 | `{"detail":"provide exactly one of image_url, image_b64, or image_data"}` |
@@ -1114,7 +1111,7 @@ flowchart TD
     E1 --> C1{"retry_check<br/>no_text? ok? 通过?"}
     C1 -->|通过| RETURN["✅ 返回结果"]
 
-    C1 -->|未通过| E2["引擎 2: siliconflow<br/>recognise()"]
+    C1 -->|未通过| E2["引擎 2: multimodal<br/>recognise()"]
     E2 --> C2{"retry_check<br/>通过?"}
     C2 -->|通过| RETURN
     C2 -->|未通过| E3["引擎 3: multimodal<br/>recognise()"]
@@ -1177,7 +1174,7 @@ flowchart TD
     START --> BRANCH["所有引擎顺序运行"]
 
     BRANCH --> E1["引擎 1: rapidocr<br/>recognise() → R1"]
-    BRANCH --> E2["引擎 2: siliconflow<br/>recognise() → R2"]
+    BRANCH --> E2["引擎 2: multimodal<br/>recognise() → R2"]
     BRANCH --> E3["引擎 3: multimodal<br/>recognise() → R3"]
 
     E1 --> SCORE["评分函数 score(R)"]
@@ -1192,7 +1189,7 @@ flowchart TD
     S2 --> PICK
     S3 --> PICK
 
-    PICK --> RETURN["✅ 返回 R2(siliconflow)"]
+    PICK --> RETURN["✅ 返回 R2(multimodal)"]
 
     classDef engine fill:#f3e5f5,stroke:#6a1b9a
     classDef score fill:#fff9c4,stroke:#f57f17
@@ -1252,7 +1249,7 @@ flowchart TD
 | 单字碎片惩罚 | `0 ~ −25` | `len(text)==1` 的区域数 × 0.3——单字越多扣越多 |
 
 > **对兰亭序实测**:rapidocr 输出 166 个单字/短词(fluency ≈ **−23**),
-> siliconflow 输出完整古文句子(fluency ≈ **+15**)——`bestof-smart`/`bestof-fluency`
+> 远程多模态输出完整古文句子(fluency ≈ **+15**)——`bestof-smart`/`bestof-fluency`
 > 都能正确选中硅基流动。
 
 **示例**:
@@ -1338,7 +1335,7 @@ curl -s -X POST http://localhost:8000/config \
 
 ### 9.5 更多 OCR 引擎接入
 
-本地/远程划分走 `remote_engines()`(内置 siliconflow、multimodal)。新注册引擎
+本地/远程划分走 `remote_engines()`(内置 multimodal)。新注册引擎
 **无需改代码**即被预设识别。要把新厂商归入远程侧:
 
 ```bash
@@ -1368,7 +1365,7 @@ export JYKJ_OCR_REMOTE_ENGINES="paddlecloud,acme-vl"   # 逗号分隔,小写
 > 传零个或传多个都会返回 HTTP 400。
 
 **路由即策略**:所有 `/ocr/{preset}` 路径自动识别 preset——
-- preset 匹配已注册引擎名(`rapidocr`/`siliconflow`/`multimodal`):等价于强制单引擎
+- preset 匹配已注册引擎名(`rapidocr`/`multimodal`):等价于强制单引擎
 - preset 匹配策略预设名(`local`/`vl`/`seq*`/`bestof*`/`fallback`/`quality`/`bestof:<mode>`):等价于 `strategy_name=preset`
 - 其他值:HTTP 404 并列出所有可用引擎和预设名
 
@@ -1386,7 +1383,7 @@ curl -s http://localhost:8000/ocr/quality \
 curl -s http://localhost:8000/ocr/text \
   -H "Content-Type: application/json" \
   -d '{"image_url":"https://example.com/scan.png",
-       "engine":"siliconflow",
+       "engine":"multimodal",
        "model":"PaddlePaddle/PaddleOCR-VL-1.5"}'
 ```
 
@@ -1420,7 +1417,7 @@ results = jykj_ocr.ocr("report.pdf", engine="rapidocr", max_pages=10, dpi=300)
 | 追求完整性,不漏字 | `bestof-longest` | 取文本最长的结果 |
 | 追求"读起来像人话" | `bestof-fluency` | 用短语密度+CJK 标点−单字碎片惩罚选最自然的结果 |
 
-> **对兰亭序实测**:rapidocr 输出 166 个单字(碎片化),siliconflow 输出完整古文
+> **对兰亭序实测**:rapidocr 输出 166 个单字(碎片化),远程多模态输出完整古文
 > 句子——`bestof-smart`/`bestof-fluency` 能正确选中硅基流动。如果只关心"读起来
 > 像人话",优先 `bestof-fluency`;如果对速度敏感,`seq`(默认)或 `seq-low_conf`
 > 往往更快。
@@ -1480,23 +1477,21 @@ A: 是针对**该页所有已启用引擎各跑一次后的候选结果**。`Bes
    参考 9.3 节的时序图:三条引擎分支顺序跑同一张图片,评分函数对每个
    `OCRResult` 独立打分。
 
-**Q: config.yaml 里 siliconflow 为什么比 multimodal 少几个字段?**
-A: 因为默认值在 `EngineConfig.resolved_model` / `resolved_base_url` 里。
-   siliconflow 的 `model` 默认就是 `PaddlePaddle/PaddleOCR-VL-1.5`、
-   `base_url` 默认就是 `https://api.siliconflow.cn/v1`,写进 YAML 只是
-   把默认值又抄一遍,反而让换模型的运维人员忘了还有
-   `JYKJ_OCR_SILICONFLOW_MODEL` 环境变量这条路。multimodal 是**通用**
-   引擎,没有默认 base_url / model,必须显式给——所以它的注释列出来了。
-   两者是同一个 `MultimodalEngine` 类,但注册为两个**独立类型**(`multimodal` 与
-   `siliconflow`):字段集合完全相同,只是默认值分布不同——`siliconflow` 自带默认
-   模型与 base URL,`multimodal` 必须显式给。写多条 `name: multimodal` 时每条都是
-   独立实例,由 `(base_url, model, api_key)` 区分。
+**Q: 想固定用硅基流动,是不是该写 `name: siliconflow`?**
+A: 不需要,也可以写。`siliconflow` 已降级为 `multimodal` 的别名:写
+   `name: siliconflow` 与写 `name: multimodal` 现在完全等价,注册表里只有
+   `rapidocr` 和 `multimodal` 两个引擎类型,返回结果里的 `engine` 字段一律是
+   `multimodal`。平台由条目里的 `base_url` + `model` 决定,不是引擎名。
+   建议直接写 `name: multimodal` 并把 `base_url` / `model` 显式写全——
+   这样换平台只改这两行,不会踩到"这个引擎有没有内置默认"的分支。
+   写多条 `name: multimodal` 时每条都是独立实例,由
+   `(base_url, model, api_key)` 区分。
 
 **Q: multimodal 报 "no base URL"?**
 A: 没设 `OPENAI_BASE_URL` 且 config.yaml 中 multimodal 的 `base_url` 留空。multimodal
    不会自动回退到硅基流动(避免把别家 key 发到硅基流动),必须显式给 URL。
 
-**Q: siliconflow 报 HTTP 402 / 余额不足?**
+**Q: 远程引擎报 HTTP 402 / 余额不足?**
 A: 账号余额不足,需充值。key 格式正确,请求已到达模型端点。
 
 **Q: rapidocr 返回乱码或全是数字?**

@@ -35,6 +35,14 @@ import requests
 ROOT = Path(__file__).resolve().parent.parent
 RESULT_PATH = ROOT / "real_model_e2e_result.json"
 
+# 客户端与服务端都要看到同一个 key,才能派生泄露检测片段。服务自己在启动时读
+# .env;这里同样补读一次,否则 key 只写进 .env 时 _leak_fragments() 返回空元组,
+# 那条"不泄露 key"的用例会因检查根本没生效而失败(不是真的泄露)。
+sys.path.insert(0, str((ROOT / "src").resolve()))
+from jykj_ocr.cli import _load_dotenv  # noqa: E402
+
+_load_dotenv(str(ROOT / ".env"))
+
 ALL_PRESETS = [
     "local",
     "vl",

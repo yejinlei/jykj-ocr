@@ -29,14 +29,12 @@ def _import_rapidocr() -> None:
 
 
 def _import_multimodal() -> None:
-    # Registers both "multimodal" and its alias factory "siliconflow".
     from ..engines import multimodal_engine  # noqa: F401
 
 
 # Deferred so that importing jykj_ocr never imports rapidocr/openai.
 register_lazy("rapidocr", _import_rapidocr)
 register_lazy("multimodal", _import_multimodal)
-register_lazy("siliconflow", _import_multimodal)
 
 __all__ = [
     "BaseEngine",

@@ -138,7 +138,7 @@ flowchart TB
     end
 
     subgraph CONFIG["配置层 config.py"]
-        ENV["环境变量&lt;br/&gt;OPENAI_API_KEY / OPENAI_BASE_URL&lt;br/&gt;SILICONFLOW_API_KEY / JYKJ_OCR_*"]
+        ENV["环境变量&lt;br/&gt;OPENAI_API_KEY / OPENAI_BASE_URL&lt;br/&gt;JYKJ_OCR_*"]
         YAML["config/config.yaml&lt;br/&gt;引擎顺序 + 策略"]
         PREC["优先级&lt;br/&gt;显式参数 &gt; YAML &gt; 环境变量 &gt; 默认"]
         ENV --&gt; PREC
@@ -157,16 +157,14 @@ flowchart TB
     subgraph REG["引擎注册表 engine/ (惰性 import)"]
         REGISTRY["registry.py&lt;br/&gt;build_engine / build_strategy"]
         REGISTRY --&gt;|lazy| RAPID_IMP["rapidocr_engine"]
-        REGISTRY --&gt;|lazy| MULTI_IMP["multimodal_engine&lt;br/&gt;(注册 multimodal + siliconflow 两个类型)"]
+        REGISTRY --&gt;|lazy| MULTI_IMP["multimodal_engine&lt;br/&gt;(唯一的远程引擎类型)"]
     end
 
     subgraph ENGINES["引擎层 engines/"]
         RAPID["RapidOCREngine&lt;br/&gt;本地 ONNX 离线&lt;br/&gt;适配 1.x/1.4.x/2.x"]
         MULTI["MultimodalEngine&lt;br/&gt;OpenAI 兼容 /chat/completions&lt;br/&gt;可实例化任意多条(同厂商多模型/多厂商/多账号)"]
-        SF["siliconflow 独立类型&lt;br/&gt;同一 MultimodalEngine 类&lt;br/&gt;默认 PaddlePaddle/PaddleOCR-VL-1.5(注入于 config.py)"]
         RAPID --&gt;|box+text+score| MODELS_MOD["models.py&lt;br/&gt;TextRegion.from_parts&lt;br/&gt;_UNSET 保留置信度"]
         MULTI --&gt;|text| MODELS_MOD
-        SF --&gt;|text| MODELS_MOD
     end
 
     subgraph INPUT["输入解析 engine/inputs.py"]
@@ -185,13 +183,11 @@ flowchart TB
     ORCH --&gt; REG
     RAPID_IMP --&gt; RAPID
     MULTI_IMP --&gt; MULTI
-    SF_IMP --&gt; SF
 
     CLI -.-&gt;|source| LOAD
     LOAD --&gt; PAGE
     PAGE --&gt;|attach_pil| RAPID
     PAGE --&gt;|attach_pil| MULTI
-    PAGE --&gt;|attach_pil| SF
 
     MODELS_MOD --&gt; OUT["OCRResult&lt;br/&gt;text+regions+engine+model+elapsed_ms"]
     OUT --&gt; CLI
@@ -205,7 +201,7 @@ flowchart TB
     class CLI,PYAPI,HTTP client
     class ENV,YAML,PREC config
     class STRAT,RETRY,TIMED orch
-    class RAPID,MULTI,SF,MODELS_MOD eng
+    class RAPID,MULTI,MODELS_MOD eng
     class LOAD,PAGE input
     </pre>
   </div>
@@ -225,17 +221,10 @@ flowchart TB
           <td>RapidOCR-onnxruntime,离线可用,中英文。适配 1.x 3-tuple / 1.4.x 2-tuple / 2.x dict。</td>
         </tr>
         <tr>
-          <td><code>siliconflow</code></td><td>远程多模态</td>
-          <td><span class="badge key">必需</span></td>
-          <td><code>PaddlePaddle/PaddleOCR-VL-1.5</code></td>
-          <td><code>sf</code> <code>silicon-flow</code> <code>silicon_flow</code></td>
-          <td>独立类型(非别名):共用 <code>MultimodalEngine</code> 类,但自带默认模型与 base URL 注入于 config.py,零配置即可用。不设 <code>OPENAI_BASE_URL</code> 时用内置硅基流动默认。</td>
-        </tr>
-        <tr>
           <td><code>multimodal</code></td><td>远程多模态</td>
           <td><span class="badge key">必需</span></td>
-          <td>由 config 指定</td>
-          <td><code>multi</code> <code>openai</code> <code>openai-compat</code> <code>openai-compatible</code> <code>llm</code> <code>sf</code> <code>silicon-flow</code> <code>silicon_flow</code></td>
+          <td>由 config 指定;留空时为 <code>PaddleOCR-VL-1.5</code></td>
+          <td><code>multi</code> <code>openai</code> <code>openai-compat</code> <code>openai-compatible</code> <code>llm</code> <code>sf</code> <code>silicon-flow</code> <code>silicon_flow</code> <code>siliconflow</code></td>
           <td>通用 OpenAI 兼容端点,适配任意平台。<strong>一个类型、无限实例</strong>:config.yaml 可写任意多条,每条由 <code>(base_url, model, api_key)</code> 区分并各自实例化;完全相同的六条 tuple 在解析时合并(第一条胜出)。base_url 留空时走 <code>OPENAI_BASE_URL</code>;两者皆无则报错(不静默回退硅基流动)。</td>
         </tr>
       </tbody>
@@ -272,7 +261,6 @@ OCRResult(text, regions, engine, model, elapsed_ms)
         <tbody>
           <tr><td><code>OPENAI_API_KEY</code></td><td>通用 key,任意 OpenAI 兼容平台</td></tr>
           <tr><td><code>OPENAI_BASE_URL</code></td><td>端点 URL(切换平台只改此两变量)</td></tr>
-          <tr><td><code>SILICONFLOW_API_KEY</code></td><td>可选,覆盖 siliconflow 的 key</td></tr>
           <tr><td><code>JYKJ_OCR_CONFIG</code></td><td>配置文件路径</td></tr>
           <tr><td><code>JYKJ_OCR_PORT</code></td><td>HTTP 服务端口</td></tr>
         </tbody>

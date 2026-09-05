@@ -57,16 +57,19 @@ pdf:
 #
 # 支持的 alias：
 #   multi / multimodal / openai / openai-compat / openai-compatible / llm
-#   sf / silicon-flow / silicon_flow        →  multimodal（通用 OpenAI 兼容）
-#   siliconflow                              →  siliconflow（自带默认 URL/模型，零配置）
+#   sf / silicon-flow / silicon_flow / siliconflow  →  multimodal
+#
+# 只有两个引擎类型：rapidocr 和 multimodal。平台不是引擎——它是条目里的
+# base_url + model 组合。下面的示例条目（硅基流动）就是 multimodal 的一种写法。
 #
 # 每条字段（未列出的键都进 extra，不影响解析）：
 #   name        类型名或 alias（default: multimodal）
 #   enabled     true/false（default: true）
-#   base_url    OpenAI 兼容端点 URL。留空时 multimodal 读 OPENAI_BASE_URL 环境变量，
-#               两者都无则报错；siliconflow 留空则用内置硅基流动默认
-#   model       模型 ID。留空时 multimodal 读 JYKJ_OCR_MULTIMODAL_MODEL；
-#               siliconflow 留空则用 PaddlePaddle/PaddleOCR-VL-1.5
+#   base_url    OpenAI 兼容端点 URL。留空时读 OPENAI_BASE_URL 环境变量，
+#               两者都无则报错（不做平台回退——把 A 平台的 key 发给 B 平台只会
+#               得到一个说不清原因的 HTTP 401）
+#   model       模型 ID。留空时读 JYKJ_OCR_MULTIMODAL_MODEL，再退化为
+#               PaddleOCR-VL-1.5（裸 ID，模力方舟可用；其他平台请显式写全）
 #   api_key     直接写入（多账号场景必须显式区分；单账号用环境变量）
 #   temperature 采样温度（default: 0.0）
 #   timeout     单页耗时上限，秒（default: 120）
@@ -152,11 +155,12 @@ engines:
   #   model: Qwen/Qwen2.5-VL-72B-Instruct
   #   timeout: 180
 
-  # siliconflow 独立类型：零配置，自带默认 URL 与 PaddlePaddle/PaddleOCR-VL-1.5。
-  # 需要自己的 key（SILICONFLOW_API_KEY，写在 .env）；只要通用 key 指向别的平台，
-  # 本条就会被送错凭据并返回 HTTP 401「Token is invalid」——保持 enabled: false。
-  # - name: siliconflow
+  # 硅基流动：与其他平台一样，就是一个 base_url + model 条目。模型 ID 要带
+  # 厂商前缀（PaddlePaddle/PaddleOCR-VL-1.5），与模力方舟的裸 ID 不同。
+  # - name: multimodal
   #   enabled: false
+  #   base_url: https://api.siliconflow.cn/v1
+  #   model: PaddlePaddle/PaddleOCR-VL-1.5
   #   timeout: 180
   #   prompt: |
   #     请识别图片中的全部文字内容，按原文的版面顺序输出。

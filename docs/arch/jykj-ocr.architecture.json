@@ -42,10 +42,9 @@
      "reg",
      "rapid",
      "multi",
-     "sf",
-     "sfapi"
+     "remote-endpoint"
     ],
-    "note": "注册表惰性 import 三个引擎,siliconflow/multimodal 走远程 OpenAI 兼容端点。"
+    "note": "注册表惰性 import 两个引擎类型(siliconflow 等只是别名),远程走 OpenAI 兼容端点。"
    },
    {
     "id": "input-config",
@@ -173,7 +172,8 @@
    "size": [
     160,
     56
-   ]
+   ],
+   "tag": "siliconflow 等别名 → multimodal"
   },
   {
    "id": "inputs",
@@ -218,20 +218,6 @@
    ]
   },
   {
-   "id": "sf",
-   "type": "backend",
-   "label": "siliconflow 别名",
-   "sublabel": "multi 别名,默认 PaddleOCR-VL",
-   "pos": [
-    560,
-    470
-   ],
-   "size": [
-    150,
-    56
-   ]
-  },
-  {
    "id": "models",
    "type": "database",
    "label": "models.py",
@@ -246,10 +232,10 @@
    ]
   },
   {
-   "id": "sfapi",
+   "id": "remote-endpoint",
    "type": "external",
-   "label": "远程端点",
-   "sublabel": "api.siliconflow.cn / 任意",
+   "label": "远程端点(任意平台)",
+   "sublabel": "base_url:硅基流动 / moark / 百炼…",
    "pos": [
     1010,
     470
@@ -286,8 +272,7 @@
    "label": "引擎层(惰性 import)",
    "wraps": [
     "rapid",
-    "multi",
-    "sf"
+    "multi"
    ]
   }
  ],
@@ -402,28 +387,20 @@
    "from": "inputs",
    "to": "strat",
    "label": "PageImage",
-   "fromSide": "top",
-   "toSide": "bottom",
+   "fromSide": "right",
+   "toSide": "right",
    "via": [
     [
-     545,
-     688
+     700,
+     730
     ],
     [
-     424,
-     688
+     700,
+     262
     ],
     [
-     424,
-     320
-    ],
-    [
-     315,
-     320
-    ],
-    [
-     315,
-     294
+     600,
+     262
     ]
    ]
   },
@@ -464,35 +441,6 @@
    ]
   },
   {
-   "id": "reg-sf",
-   "from": "reg",
-   "to": "sf",
-   "fromSide": "right",
-   "toSide": "top",
-   "via": [
-    [
-     400,
-     108
-    ],
-    [
-     432,
-     108
-    ],
-    [
-     432,
-     440
-    ],
-    [
-     635,
-     440
-    ],
-    [
-     635,
-     470
-    ]
-   ]
-  },
-  {
    "id": "rapid-models",
    "from": "rapid",
    "to": "models",
@@ -509,24 +457,24 @@
    "toSide": "left"
   },
   {
-   "id": "sf-sfapi",
-   "from": "sf",
-   "to": "sfapi",
-   "label": "HTTPS /chat/completions",
+   "id": "multi-sfapi",
+   "from": "multi",
+   "to": "remote-endpoint",
+   "label": "任意 OpenAI 兼容端点",
    "fromSide": "right",
    "toSide": "left",
    "labelDx": 40,
-   "labelDy": -26
-  },
-  {
-   "id": "multi-sfapi",
-   "from": "multi",
-   "to": "sfapi",
-   "label": "任意 OpenAI 兼容端点",
-   "fromSide": "right",
-   "toSide": "top",
-   "labelDx": 40,
-   "labelDy": 40
+   "labelDy": -8,
+   "via": [
+    [
+     760,
+     218
+    ],
+    [
+     760,
+     500
+    ]
+   ]
   }
  ],
  "cards": [
@@ -545,8 +493,9 @@
    "items": [
     "import jykj_ocr 不加载 PIL/rapidocr/openai",
     "rapidocr 本地 ONNX,中英文,离线可用",
-    "multimodal 通用 OpenAI 兼容,siliconflow 是其注册别名(默认模型/URL 在 config.py 注入)",
-    "build_pipeline:seq* 顺序尝试(StrategyEngine) vs bestof* 全跑打分(BestofEngine)"
+    "两个引擎类型 rapidocr + multimodal;siliconflow 等只是别名,平台由 base_url + model 决定",
+    "build_pipeline:seq* 顺序尝试(StrategyEngine) vs bestof* 全跑打分(BestofEngine)",
+    "base_url 解析不出即 EngineNotAvailable——不静默回退到某个平台"
    ]
   },
   {
@@ -555,7 +504,7 @@
    "items": [
     "seq* 顺序预设:local / vl / seq / seq-any(quality) / seq-low_conf / seq-line_overlap",
     "bestof* 最佳预设:smart(默认) / fastest / confidence / longest / fluency + bestof:<mode>",
-    "bestof-fluency:短语密度 +15 + CJK 标点 +5 − 单字碎片 −25(兰亭序 sf≈+15,rapidocr≈−23)",
+    "bestof-fluency:短语密度 +15 + CJK 标点 +5 − 单字碎片 −25(兰亭序 远程≈+15,rapidocr≈−23)",
     "build_pipeline 检测 strategy[bestof_mode] → BestofEngine;否则走 StrategyEngine",
     "apply_strategy_preset 返回 deepcopy,单次请求不改动 base config"
    ]

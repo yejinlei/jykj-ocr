@@ -2,7 +2,7 @@
 """jykj_ocr HTTP API 全场景使用示例(通过 requests 调用本地服务)。
 
 覆盖场景:
-  1. 单独引擎:rapidocr / siliconflow / multimodal
+  1. 单独引擎:rapidocr / multimodal
   2. 顺序策略:local / vl / seq / seq-any / seq-low_conf / seq-line_overlap
   3. 最佳策略:bestof / bestof-smart / bestof-fastest / bestof-confidence /
              bestof-longest / bestof:<mode>
@@ -85,8 +85,8 @@ def _summary(label: str, page: dict, elapsed: float, text_len: int | None = None
 # 场景 1 —— 单独引擎
 # ============================================================================
 def demo_single_engines(base: str, image: Path) -> None:
-    _section("场景 1 · 单独引擎(rapidocr / siliconflow)")
-    for engine in ("rapidocr", "siliconflow"):
+    _section("场景 1 · 单独引擎(rapidocr / multimodal)")
+    for engine in ("rapidocr", "multimodal"):
         t0 = time.perf_counter()
         try:
             d = _ocr_json(base, image, engine=engine, format="json")

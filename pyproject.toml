@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jykj-ocr"
 version = "0.1.0"
-description = "Multi-engine OCR: local RapidOCR + multimodal OCR LLM (SiliconFlow, OpenAI-compatible)"
+description = "Multi-engine OCR: local RapidOCR + multimodal OCR LLM (any OpenAI-compatible platform)"
 requires-python = ">=3.10"
 authors = [{ name = "jykj" }]
 dependencies = [

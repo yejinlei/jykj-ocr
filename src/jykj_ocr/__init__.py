@@ -56,7 +56,7 @@ def ocr(
 
     Args:
         source: Path to an image/PDF, or an ``http(s)://`` URL.
-        engine: Engine to force (e.g. ``"rapidocr"``, ``"siliconflow"``).
+        engine: Engine to force (e.g. ``"rapidocr"``, ``"multimodal"``).
             When ``None``, the strategy chain from config is used.
         config: A pre-built :class:`Config`; overrides ``config_path``.
         config_path: Path to a config file (or ``JYKJ_OCR_CONFIG`` env var).
@@ -79,7 +79,7 @@ def ocr(
         return []
 
     if engine:
-        # build_engine normalises aliases (``sf`` -> ``siliconflow``) and falls
+        # build_engine normalises aliases (``multi`` -> ``multimodal``) and falls
         # back to a default EngineConfig when the name is not in the config.
         pipeline = TimedOCR(build_engine(engine, cfg))
     elif strategy_name:

@@ -6,9 +6,9 @@ CLI、Python API 与 FastAPI HTTP 接口。
 
 ```
 ┌──────────┐   ┌────────────┐   ┌──────────────────────────────────┐
-│ CLI / API│──▶│ Strategy   │──▶│ rapidocr (local ONNX, offline)    │
-│ / HTTP   │   │ (retry链)  │   │ siliconflow (PaddleOCR-VL-1.5)    │
-└──────────┘   └────────────┘   │ multimodal (OpenAI-compatible)   │
+│ CLI / API│──▶│ Strategy   │──▶│ rapidocr (local ONNX, offline)   │
+│ / HTTP   │   │ (重试链)   │   │ multimodal (OpenAI-compatible)   │
+└──────────┘   └────────────┘   │ any platform (base_url + model)  │
                                 └──────────────────────────────────┘
 ```
 
@@ -17,8 +17,21 @@ CLI、Python API 与 FastAPI HTTP 接口。
 | 引擎 | 类型 | 需 API key | 默认模型 | 说明 |
 |------|------|:----------:|---------|------|
 | `rapidocr` | 本地 ONNX | ❌ | — | RapidOCR-onnxruntime,离线可用,中英文 |
-| `siliconflow` | 远程多模态 | ✅ | `PaddlePaddle/PaddleOCR-VL-1.5` | 独立类型(非别名):零配置即可用,默认模型/URL 注入于 config.py |
-| `multimodal` | 远程多模态 | ✅ | 由 config 指定 | 通用 OpenAI 兼容端点,**一个类型、无限实例** |
+| `multimodal` | 远程多模态 | ✅ | `PaddleOCR-VL-1.5`(留空时) | 通用 OpenAI 兼容端点,**一个类型、无限实例** |
+
+**平台不是引擎**。硅基流动、模力方舟(moark)、阿里云百炼、火山方舟、智谱、本地 vLLM
+都只是「平台」——它们由条目里的 `base_url` + `model` 区分,不是额外的引擎类型。
+全项目只有上表两个类型。想直接用硅基流动:
+
+```yaml
+engines:
+  - name: multimodal
+    base_url: https://api.siliconflow.cn/v1   # 硅基流动
+    model: PaddlePaddle/PaddleOCR-VL-1.5      # 该平台要求带厂商前缀
+```
+
+只认裸模型 ID 的平台(如模力方舟)则写 `model: Qwen3-VL-30B-A3B-Instruct`,
+`base_url` 留空走 `OPENAI_BASE_URL` 环境变量即可。
 
 **多实例**:`multimodal` 是「类型」不是「实例 id」。config.yaml 里可以写任意多条
 `name: multimodal`,每条实例化为一个独立的 `MultimodalEngine`,由
@@ -34,8 +47,9 @@ CLI、Python API 与 FastAPI HTTP 接口。
 
 **引擎别名**(`config.normalise_engine`):`rapid`/`rapid-ocr`/`rapidocr-onnx` → `rapidocr`;
 `multi`/`openai`/`openai-compat`/`openai-compatible`/`llm` → `multimodal`;
-`sf`/`silicon-flow`/`silicon_flow` → `multimodal`(通用端点);
-`siliconflow` → `siliconflow`(独立类型,自带默认 URL 与模型)。
+`sf`/`silicon-flow`/`silicon_flow`/`siliconflow` → `multimodal`。
+别名只为兼容旧配置:写 `name: siliconflow` 与写 `name: multimodal` 现在完全等价,
+返回结果里的 `engine` 字段一律是 `multimodal`。
 
 远程引擎统一走 **OpenAI 兼容协议**(`POST /chat/completions`,`messages` 数组 +
 `image_url` data-URI content parts),只依赖 `requests`,不引入 `openai` SDK。
@@ -50,7 +64,7 @@ CLI、Python API 与 FastAPI HTTP 接口。
 | 预设 | 引擎范围 | retry_mode | 文本重排 |
 |------|----------|------------|:--------:|
 | `local` | 仅本地(rapidocr 等),远程禁用 | `no_text` | ❌ |
-| `vl` | 仅 VL 大模型(siliconflow/multimodal),本地禁用 | `no_text` | ❌ |
+| `vl` | 仅 VL 大模型(multimodal),本地禁用 | `no_text` | ❌ |
 | `seq` | 全部启用引擎,按配置顺序回退(默认) | `no_text` | ❌ |
 | `seq-any` | 同 seq,但低置信度或窜行即降级 | `any` | ✅ 按坐标重建阅读顺序 |
 | `seq-low_conf` | 低置信度时自动降级 | `low_confidence` | ❌ |
@@ -163,10 +177,14 @@ cp .env.example .env              # 复制模板,填入真实 key
 |------|------|
 | `OPENAI_API_KEY` | 通用 API key,适配任意 OpenAI 兼容平台 |
 | `OPENAI_BASE_URL` | 端点 URL(硅基流动 / 阿里云百炼 / 智谱 / 本地 vLLM 等) |
-| `SILICONFLOW_API_KEY` | 可选,仅当 siliconflow 需要与 `OPENAI_*` 不同的 key 时覆盖 |
+| `JYKJ_OCR_<NAME>_API_KEY` | 按「类型」命名的专用 key,优先于 `OPENAI_API_KEY` |
 
 **配置优先级**(高 → 低):显式参数 > `config/config.yaml` > 环境变量(`JYKJ_OCR_*`、
-`JYKJ_OCR_<NAME>_API_KEY`、`<NAME>_API_KEY`、`OPENAI_API_KEY`、`OPENAI_BASE_URL`)> 内置默认值。
+`JYKJ_OCR_<NAME>_API_KEY`、`<NAME>_API_KEY`、`OPENAI_API_KEY`、`OPENAI_BASE_URL`)>
+内置默认值。base URL 与模型名都没有厂商默认——base URL 解析不出来就
+`EngineNotAvailable`,而不是静默指向某个平台(那样 A 平台的 key 会被发给 B 平台,
+最后只表现为一个说不清原因的 HTTP 401)。唯一保留的默认是模型名:留空时用
+裸 ID `PaddleOCR-VL-1.5`,只适用于认裸 ID 的平台。
 
 注意方向:三个 `resolved_*` 都是「yaml 有值就用 yaml,留空才回退环境变量」,所以
 **环境变量不会覆盖 yaml 里已写的字段**。想让 `OPENAI_BASE_URL` 决定平台,
@@ -180,10 +198,10 @@ cp .env.example .env              # 复制模板,填入真实 key
 python -m jykj_ocr --list-engines
 
 # 识别图片(指定引擎)
-python -m jykj_ocr image.png --engine siliconflow --format json
+python -m jykj_ocr image.png --engine multimodal --format json
 python -m jykj_ocr doc.pdf   --engine rapidocr  --format markdown -o out.md
 
-# 不指定引擎 → 走 config.yaml 中的策略链(rapidocr → siliconflow)
+# 不指定引擎 → 走 config.yaml 中的策略链(rapidocr → multimodal)
 python -m jykj_ocr image.png
 
 # 启动 HTTP 服务
@@ -212,7 +230,7 @@ OCR 与 `serve` 共用同一组选项,`--host` / `--port` 仅在 `serve` 时生�
 import jykj_ocr
 
 # 指定引擎
-results = jykj_ocr.ocr("image.png", engine="siliconflow")
+results = jykj_ocr.ocr("image.png", engine="multimodal")
 print(results[0].text, results[0].model)
 
 # 走策略链(配置文件中的引擎顺序)
@@ -253,14 +271,14 @@ python -m jykj_ocr serve          # 或 JYKJ_OCR_PORT=9000 python -m jykj_ocr se
 ```bash
 curl -s http://localhost:8000/ocr \
   -F "file=@image.png" \
-  -F "engine=siliconflow" \
+  -F "engine=multimodal" \
   -F "format=json" | python -m json.tool
 ```
 
 form 字段:`file`(必填)、`engine`、`model`、`prompt`、`strategy`(JSON 字符串)、
 `strategy_name`(`local`/`vl`/`seq*`/`bestof*`,一次性预设,见策略预设章节)、
 `max_pages`、`dpi`、`format`(`json`/`text`/`markdown`)。`model`/`prompt` 仅对远程引擎
-(`siliconflow`/`multimodal`,或 `JYKJ_OCR_REMOTE_ENGINES` 标定的引擎)生效,
+(`multimodal`,或 `JYKJ_OCR_REMOTE_ENGINES` 额外标定的引擎)生效,
 本地 `rapidocr` 不受影响。
 
 **POST /ocr/text** 示例:
@@ -276,7 +294,7 @@ curl -s http://localhost:8000/ocr/text \
 ```bash
 curl -s -X POST http://localhost:8000/config \
   -H "Content-Type: application/json" \
-  -d '{"engines":[{"name":"siliconflow","model":"Qwen/Qwen2.5-VL-72B"}]}'
+  -d '{"engines":[{"name":"multimodal","model":"Qwen/Qwen2.5-VL-72B"}]}'
 ```
 
 **异常映射**:`InputError → 400`、`EngineNotAvailable → 422`、`EngineError → 502`、
@@ -294,7 +312,7 @@ docker compose up --build
 
 # 容器内一次性任务
 docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
-    python -m jykj_ocr /data/image.png --engine siliconflow
+    python -m jykj_ocr /data/image.png --engine multimodal
 ```
 
 镜像 `python:3.11-slim`、非 root 用户、含 `HEALTHCHECK`;配置与端口通过
@@ -306,7 +324,7 @@ docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
 .venv/Scripts/python -m pytest tests -q     # 全部离线,无真实 API 调用
 ```
 
-211 个用例覆盖:models(边界框/文本区域/置信度保留)、config(别名归一化/YAML/环境变量
+212 个用例覆盖:models(边界框/文本区域/置信度保留)、config(别名归一化/YAML/环境变量
 优先级/多 multimodal 实例去重)、strategy(重试链/谓词)、engines(multimodal 的 OpenAI 响应解析
 / rapidocr 的 1.x 3-tuple 与 1.4.x 2-tuple 返回形态)、server(HTTP 路由与预设、
 `TextRequest.source()` 三种图片来源)、presets(`seq*`/`cascade*`/`bestof*` 展开)、
@@ -347,11 +365,11 @@ src/jykj_ocr/
 │   └── registry.py        # build_engine / build_pipeline / apply_strategy_preset / remote_engines / _SEQ_PRESETS
 ├── engines/
 │   ├── rapidocr_engine.py     # RapidOCREngine(适配 1.x/1.4.x/2.x 返回形态)
-│   └── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容;注册 multimodal + siliconflow 两个类型)
+│   └── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容,唯一远程类型)
 ├── cli.py               # argparse CLI
 └── server.py            # FastAPI /ocr /ocr/text /ocr/{preset}(/text) /config /engines /presets /health
 config/config.yaml       # 默认引擎 + 策略(可含多条 multimodal 实例)
-tests/                   # pytest,211 passed
+tests/                   # pytest,212 passed
 scripts/                 # 诊断与接口测试脚本
 Dockerfile / docker-compose.yml
 requirements.txt / pyproject.toml

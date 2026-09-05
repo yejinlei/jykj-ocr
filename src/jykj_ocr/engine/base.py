@@ -255,8 +255,8 @@ def describe_engines() -> Dict[str, str]:
     """Human-readable engine descriptions for ``--list-engines``."""
     return {
         "rapidocr": "本地 RapidOCR (ONNX)，无需 API key，离线可用",
-        "siliconflow": "硅基流动多模态 OCR 大模型 (DeepSeek-OCR)",
-        "multimodal": "OpenAI 兼容多模态端点（其他平台通用）",
+        "multimodal": "OpenAI 兼容多模态端点（硅基流动 / 百炼 / 火山 / vLLM 等任意平台，"
+                      "可配置多个实例）",
     }
 
 

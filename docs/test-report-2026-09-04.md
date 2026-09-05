@@ -5,6 +5,13 @@
 **测试日期**:2026-09-04
 **测试图**:`tests/兰亭序.jpeg`(750×1390,110 KB,中文古文竖排繁体)
 
+> **关于本报告里的 `siliconflow`**:测试当时 HEAD 仍把 siliconflow 作为独立引擎类型,
+> 结果里的 `engine: "siliconflow"` 是当时的真实输出,故按原样保留。此后它已降级为
+> `multimodal` 的别名——现在只有 `rapidocr` / `multimodal` 两个引擎类型,返回结果一律
+> 报 `multimodal`;同一平台改为在条目里写 `base_url` + `model`。
+> 第 8 节用到的 `JYKJ_OCR_SILICONFLOW_MODEL` 也已是死变量,对应的是
+> `JYKJ_OCR_MULTIMODAL_MODEL`。测量值本身(耗时/字数/结论)不受影响。
+
 ---
 
 ## 1. Bug 修复验证:`elapsed_ms`

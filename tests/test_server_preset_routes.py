@@ -114,14 +114,14 @@ def _ocr_response(results, fmt: str):
 def _build_faked_app(cfg):
     real_build_engine = engine_registry.build_engine
     rapid = _FakeEngine("rapidocr", "rap", 0.9, elapsed_ms=80)
-    sf = _FakeEngine("siliconflow", "siliconflow longer text here.", 1.0, elapsed_ms=1200)
+    vl = _FakeEngine("multimodal", "multimodal longer text here.", 1.0, elapsed_ms=1200)
 
     def _fake_build_engine(name, config, engine_config=None):
         norm = engine_registry.normalise_engine(name)
         if norm == "rapidocr":
             return rapid
-        if norm in ("siliconflow", "multimodal"):
-            return sf
+        if norm == "multimodal":
+            return vl
         return real_build_engine(norm, config)
 
     engine_registry.build_engine = _fake_build_engine
@@ -142,7 +142,7 @@ def _build_faked_app(cfg):
         if out_format not in ("json", "text", "markdown"):
             raise HTTPException(400, "bad format")
         norm = engine_registry.normalise_engine(preset)
-        registered = ("rapidocr", "siliconflow", "multimodal")
+        registered = ("rapidocr", "multimodal")
         lower = preset.lower()
         if norm in registered:
             body = TextRequest(image_url="", engine=preset)
@@ -165,7 +165,7 @@ def _build_faked_app(cfg):
         if not body.image_url:
             raise HTTPException(400, "image_url required")
         norm = engine_registry.normalise_engine(preset)
-        if norm in ("rapidocr", "siliconflow", "multimodal"):
+        if norm in ("rapidocr", "multimodal"):
             body.engine = preset
         elif preset.lower() in engine_registry.STRATEGY_PRESETS:
             body.strategy_name = preset
@@ -187,8 +187,8 @@ def client():
     cfg = from_mapping({
         "engines": [
             {"name": "rapidocr", "enabled": True},
-            {"name": "siliconflow", "enabled": True, "model": "PaddleOCR-VL-1.5"},
-            {"name": "multimodal", "enabled": False},
+            {"name": "multimodal", "enabled": True, "model": "PaddleOCR-VL-1.5"},
+            {"name": "multimodal", "enabled": False, "model": "doubao-1-5-vision-pro-32k"},
         ],
         "strategy": {"max_retries": 0},
         "output": {},
@@ -208,12 +208,22 @@ class TestPresetRouteEngine:
         assert r.status_code == 200, r.text
         assert r.json()["pages"][0]["engine"] == "rapidocr"
 
-    def test_engine_preset_siliconflow(self, client):
+    def test_engine_preset_multimodal(self, client):
+        r = client.post("/ocr/multimodal",
+                        files={"file": ("img.jpg", b"dummy", "image/jpeg")},
+                        data={"format": "json"})
+        assert r.status_code == 200, r.text
+        assert r.json()["pages"][0]["engine"] == "multimodal"
+
+    def test_siliconflow_alias_route_reports_multimodal(self, client):
+        """``/ocr/siliconflow`` 曾是独立引擎的路由。现在 siliconflow 归一化
+        为 multimodal:入口仍通(向后兼容),但结果引擎标为 multimodal 而不是
+        siliconflow——不存在第三个引擎类型。"""
         r = client.post("/ocr/siliconflow",
                         files={"file": ("img.jpg", b"dummy", "image/jpeg")},
                         data={"format": "json"})
         assert r.status_code == 200, r.text
-        assert r.json()["pages"][0]["engine"] == "siliconflow"
+        assert r.json()["pages"][0]["engine"] == "multimodal"
 
     def test_unknown_preset_returns_404(self, client):
         r = client.post("/ocr/does-not-exist",
@@ -223,12 +233,12 @@ class TestPresetRouteEngine:
 
 
 class TestPresetRouteStrategy:
-    def test_bestof_picks_siliconflow_by_smart(self, client):
+    def test_bestof_picks_multimodal_by_smart(self, client):
         r = client.post("/ocr/bestof",
                         files={"file": ("img.jpg", b"dummy", "image/jpeg")},
                         data={"format": "json"})
         assert r.status_code == 200, r.text
-        assert r.json()["pages"][0]["engine"] == "siliconflow"
+        assert r.json()["pages"][0]["engine"] == "multimodal"
 
     def test_bestof_fastest_picks_rapidocr(self, client):
         r = client.post("/ocr/bestof-fastest",
@@ -237,26 +247,26 @@ class TestPresetRouteStrategy:
         assert r.status_code == 200, r.text
         assert r.json()["pages"][0]["engine"] == "rapidocr"
 
-    def test_bestof_confidence_picks_siliconflow(self, client):
+    def test_bestof_confidence_picks_multimodal(self, client):
         r = client.post("/ocr/bestof-confidence",
                         files={"file": ("img.jpg", b"dummy", "image/jpeg")},
                         data={"format": "json"})
         assert r.status_code == 200, r.text
-        assert r.json()["pages"][0]["engine"] == "siliconflow"
+        assert r.json()["pages"][0]["engine"] == "multimodal"
 
-    def test_bestof_longest_picks_siliconflow(self, client):
+    def test_bestof_longest_picks_multimodal(self, client):
         r = client.post("/ocr/bestof-longest",
                         files={"file": ("img.jpg", b"dummy", "image/jpeg")},
                         data={"format": "json"})
         assert r.status_code == 200, r.text
-        assert r.json()["pages"][0]["engine"] == "siliconflow"
+        assert r.json()["pages"][0]["engine"] == "multimodal"
 
-    def test_bestof_fluency_picks_siliconflow(self, client):
+    def test_bestof_fluency_picks_multimodal(self, client):
         r = client.post("/ocr/bestof-fluency",
                         files={"file": ("img.jpg", b"dummy", "image/jpeg")},
                         data={"format": "json"})
         assert r.status_code == 200, r.text
-        assert r.json()["pages"][0]["engine"] == "siliconflow"
+        assert r.json()["pages"][0]["engine"] == "multimodal"
 
     def test_bestof_colon_syntax_alias(self, client):
         r = client.post("/ocr/bestof:fastest",
@@ -278,12 +288,12 @@ class TestPresetRouteStrategy:
         assert r.status_code == 200, r.text
         assert r.json()["pages"][0]["engine"] == "rapidocr"
 
-    def test_vl_preset_uses_siliconflow(self, client):
+    def test_vl_preset_uses_multimodal(self, client):
         r = client.post("/ocr/vl",
                         files={"file": ("img.jpg", b"dummy", "image/jpeg")},
                         data={"format": "json"})
         assert r.status_code == 200, r.text
-        assert r.json()["pages"][0]["engine"] == "siliconflow"
+        assert r.json()["pages"][0]["engine"] == "multimodal"
 
 
 class TestPresetRouteFormats:
@@ -320,7 +330,7 @@ class TestPresetRouteText:
         r = client.post("/ocr/bestof-fluency/text",
                         json={"image_url": "http://x/y.jpg", "format": "json"})
         assert r.status_code == 200, r.text
-        assert r.json()["pages"][0]["engine"] == "siliconflow"
+        assert r.json()["pages"][0]["engine"] == "multimodal"
 
 
 # ---------------------------------------------------------------------------
@@ -375,8 +385,8 @@ class TestEnginesEndpointMultipleInstances:
         """A client whose server loads a config file we control."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("JYKJ_OCR_MULTIMODAL_API_KEY", raising=False)
-        monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
-        monkeypatch.delenv("JYKJ_OCR_SILICONFLOW_API_KEY", raising=False)
+        monkeypatch.delenv("MULTIMODAL_API_KEY", raising=False)
+        monkeypatch.delenv("JYKJ_OCR_MULTIMODAL_API_KEY", raising=False)
         yield tmp_path, monkeypatch
 
     def _client_from_yaml(self, tmp_path, monkeypatch, yaml_body):
@@ -422,8 +432,9 @@ engines:
             assert "has_api_key" not in entry
 
     def test_same_provider_different_accounts_stay_distinct(self, multi_client):
-        """Two siliconflow entries with the same base_url+model but different
-        api_key are separate instances — dedupe must not collapse them."""
+        """Two multimodal entries for the same platform with the same
+        base_url+model but different api_key are separate accounts — dedupe
+        must not collapse them."""
         tmp_path, monkeypatch = multi_client
         yaml_body = """
 engines:
@@ -477,8 +488,8 @@ class TestStrategyKnobs:
         return from_mapping({
             "engines": [
                 {"name": "rapidocr", "enabled": True},
-                {"name": "siliconflow", "enabled": True},
-                {"name": "multimodal", "enabled": False},
+                {"name": "multimodal", "enabled": True, "model": "PaddleOCR-VL-1.5"},
+                {"name": "multimodal", "enabled": False, "model": "doubao-1-5-vision-pro-32k"},
             ],
             "strategy": {"name": "seq", "max_retries": 1},
             "output": {},

@@ -9,7 +9,6 @@ import pytest
 
 from jykj_ocr.config import (
     EngineConfig,
-    SILICONFLOW_BASE_URL,
     from_mapping,
     load_config,
     load_prompt,
@@ -19,8 +18,8 @@ from jykj_ocr.engines.multimodal_engine import MultimodalEngine
 
 _KEY_ENVS = (
     "OPENAI_API_KEY",
-    "SILICONFLOW_API_KEY",
-    "JYKJ_OCR_SILICONFLOW_API_KEY",
+    "MULTIMODAL_API_KEY",
+    "JYKJ_OCR_MULTIMODAL_API_KEY",
     "MULTIMODAL_API_KEY",
     "JYKJ_OCR_MULTIMODAL_API_KEY",
 )
@@ -38,9 +37,11 @@ class TestNormaliseEngine:
         for alias in ("rapid", "rapid-ocr", "rapidocr-onnx"):
             assert normalise_engine(alias) == "rapidocr"
 
-    def test_siliconflow_aliases(self):
+    def test_siliconflow_aliases_fold_to_multimodal(self):
+        """SiliconFlow is one configured instance of multimodal, not its own
+        engine type — its aliases must land on the generic type."""
         for alias in ("sf", "silicon-flow", "silicon_flow", "SILICONFLOW"):
-            assert normalise_engine(alias) == "siliconflow"
+            assert normalise_engine(alias) == "multimodal"
 
     def test_multimodal_aliases(self):
         for alias in ("multi", "openai", "openai-compat", "openai-compatible", "llm"):
@@ -59,10 +60,11 @@ class TestNormaliseEngine:
 
 
 class TestEngineConfig:
-    def test_siliconflow_resolves_base_url(self, monkeypatch):
-        """Without OPENAI_BASE_URL, siliconflow falls back to its built-in URL."""
+    def test_siliconflow_has_no_built_in_base_url(self, monkeypatch):
+        """No vendor default URL: every remote instance must name its endpoint.
+        Silent vendor fallback would route one platform's key to another."""
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        assert EngineConfig(name="siliconflow").resolved_base_url == SILICONFLOW_BASE_URL
+        assert EngineConfig(name="siliconflow").resolved_base_url == ""
 
     def test_base_url_trailing_slash_stripped(self):
         cfg = EngineConfig(name="multimodal", base_url="https://example.test/v1/")
@@ -73,26 +75,25 @@ class TestEngineConfig:
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         assert EngineConfig(name="multimodal").resolved_base_url == ""
 
-    def test_siliconflow_default_model(self, monkeypatch):
-        """Without any env override, siliconflow resolves to its built-in default."""
-        monkeypatch.delenv("JYKJ_OCR_SILICONFLOW_MODEL", raising=False)
-        assert EngineConfig(name="siliconflow").resolved_model == "PaddlePaddle/PaddleOCR-VL-1.5"
+    def test_siliconflow_has_no_built_in_model(self, monkeypatch):
+        """Models are platform-specific, so no engine-level default survives."""
+        monkeypatch.delenv("JYKJ_OCR_MULTIMODAL_MODEL", raising=False)
+        assert EngineConfig(name="siliconflow").resolved_model == ""
+        assert EngineConfig(name="multimodal").resolved_model == ""
 
     def test_explicit_model_wins(self):
-        cfg = EngineConfig(
-            name="siliconflow", model="PaddlePaddle/PaddleOCR-VL-1.5"
-        )
-        assert cfg.resolved_model == "PaddlePaddle/PaddleOCR-VL-1.5"
+        cfg = EngineConfig(name="multimodal", model="PaddleOCR-VL-1.5")
+        assert cfg.resolved_model == "PaddleOCR-VL-1.5"
 
-    def test_env_model_overrides_default(self, monkeypatch):
-        """``JYKJ_OCR_SILICONFLOW_MODEL`` lets operators swap models per deploy
+    def test_env_model_is_used(self, monkeypatch):
+        """``JYKJ_OCR_MULTIMODAL_MODEL`` lets operators swap models per deploy
         without editing the config file."""
-        monkeypatch.setenv("JYKJ_OCR_SILICONFLOW_MODEL", "moonshotai/Kimi-K2.7-Code")
-        assert EngineConfig(name="siliconflow").resolved_model == "moonshotai/Kimi-K2.7-Code"
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_MODEL", "moonshotai/Kimi-K2.7-Code")
+        assert EngineConfig(name="multimodal").resolved_model == "moonshotai/Kimi-K2.7-Code"
 
     def test_explicit_model_beats_env_model(self, monkeypatch):
-        monkeypatch.setenv("JYKJ_OCR_SILICONFLOW_MODEL", "env-model")
-        cfg = EngineConfig(name="siliconflow", model="explicit-model")
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_MODEL", "env-model")
+        cfg = EngineConfig(name="multimodal", model="explicit-model")
         assert cfg.resolved_model == "explicit-model"
 
     def test_resolved_api_key_prefers_explicit(self, monkeypatch):
@@ -100,14 +101,16 @@ class TestEngineConfig:
         assert EngineConfig(api_key="explicit").resolved_api_key == "explicit"
 
     def test_resolved_api_key_env_precedence(self, monkeypatch):
+        """Same type, two accounts: the type-scoped var serves all instances,
+        so distinct accounts need an explicit api_key on the entry."""
         monkeypatch.setenv("OPENAI_API_KEY", "generic")
-        monkeypatch.setenv("SILICONFLOW_API_KEY", "specific")
-        assert EngineConfig(name="siliconflow").resolved_api_key == "specific"
+        monkeypatch.setenv("MULTIMODAL_API_KEY", "specific")
+        assert EngineConfig(name="multimodal").resolved_api_key == "specific"
 
     def test_resolved_api_key_project_prefix_wins(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "generic")
-        monkeypatch.setenv("JYKJ_OCR_SILICONFLOW_API_KEY", "scoped")
-        assert EngineConfig(name="siliconflow").resolved_api_key == "scoped"
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_API_KEY", "scoped")
+        assert EngineConfig(name="multimodal").resolved_api_key == "scoped"
 
     def test_resolved_api_key_generic_fallback(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "generic")
@@ -232,24 +235,25 @@ class TestMultipleMultimodalInstances:
         explicit = MultimodalEngine(EngineConfig(name="multimodal", model="custom"))
         assert explicit.model_name == "custom"
 
-    def test_siliconflow_default_url_without_env(self, monkeypatch):
-        """With no env overrides a ``siliconflow`` entry resolves to the
-        vendor's built-in URL and model — the zero-config path."""
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        monkeypatch.delenv("JYKJ_OCR_SILICONFLOW_MODEL", raising=False)
-        engine = MultimodalEngine(EngineConfig(name="siliconflow"))
-        assert engine.base_url == SILICONFLOW_BASE_URL
-        assert engine.model_name == "PaddlePaddle/PaddleOCR-VL-1.5"
+    def test_engine_requires_a_base_url(self, monkeypatch):
+        """No vendor default URL, so an unnamed endpoint fails fast here rather
+        than sending one platform's key to another platform and surfacing as
+        an opaque HTTP 401 downstream."""
+        from jykj_ocr.engine.base import EngineNotAvailable
 
-    def test_siliconflow_entry_still_reads_openai_env(self, monkeypatch):
-        """Documented precedence is explicit config -> OPENAI_BASE_URL ->
-        vendor default, so a siliconflow entry honours the standard env var
-        too (same as any other OpenAI-compatible entry)."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        with pytest.raises(EngineNotAvailable, match="base URL"):
+            MultimodalEngine(EngineConfig(name="multimodal", api_key="k"))
+
+    def test_alias_entry_reads_openai_env(self, monkeypatch):
+        """A config entry still written as ``siliconflow`` (legacy) resolves
+        exactly like any other multimodal entry: explicit config ->
+        OPENAI_BASE_URL, no vendor fallback."""
         monkeypatch.setenv("OPENAI_BASE_URL", "https://other.test/v1")
-        monkeypatch.delenv("JYKJ_OCR_SILICONFLOW_MODEL", raising=False)
+        monkeypatch.delenv("JYKJ_OCR_MULTIMODAL_MODEL", raising=False)
         engine = MultimodalEngine(EngineConfig(name="siliconflow"))
         assert engine.base_url == "https://other.test/v1"
-        assert engine.model_name == "PaddlePaddle/PaddleOCR-VL-1.5"
+        assert engine.engine_id() == "multimodal"
 
     def test_generic_multimodal_reads_openai_env(self, monkeypatch):
         """A generic ``multimodal`` entry with no explicit config falls back
@@ -261,7 +265,9 @@ class TestMultipleMultimodalInstances:
         engine = MultimodalEngine(EngineConfig(name="multimodal"))
         assert engine.base_url == "https://any.test/v1"
         assert engine.api_key == "sk-generic"
-        assert engine.model_name == "PaddlePaddle/PaddleOCR-VL-1.5"
+        # Last-resort model is the bare OCR-VL-1.5 ID; a configured platform
+        # should always supply its own (vendor-prefixed or bare) model ID.
+        assert engine.model_name == "PaddleOCR-VL-1.5"
 
 
 class TestFromMapping:
@@ -270,8 +276,9 @@ class TestFromMapping:
         assert cfg.engines[0].name == "rapidocr"
 
     def test_string_engine_entry(self):
+        """The SiliconFlow shorthand collapses to the generic remote type."""
         cfg = from_mapping({"engines": ["sf"]})
-        assert [e.name for e in cfg.engines] == ["siliconflow"]
+        assert [e.name for e in cfg.engines] == ["multimodal"]
 
     def test_unknown_engine_keys_landed_in_extra(self):
         cfg = from_mapping(
@@ -308,7 +315,7 @@ class TestFromMapping:
     def test_engine_lookup_uses_aliases(self):
         cfg = from_mapping({"engines": [{"name": "rapidocr"}]})
         assert cfg.find_engine("rapid") is cfg.engines[0]
-        assert cfg.find_engine("siliconflow") is None
+        assert cfg.find_engine("multimodal") is None
 
     def test_enabled_engines_filters(self):
         cfg = from_mapping(

@@ -8,7 +8,7 @@ flowchart TB
     end
 
     subgraph CONFIG["配置层 config.py"]
-        ENV["环境变量<br/>OPENAI_API_KEY / OPENAI_BASE_URL<br/>SILICONFLOW_API_KEY / JYKJ_OCR_*"]
+        ENV["环境变量<br/>OPENAI_API_KEY / OPENAI_BASE_URL<br/>JYKJ_OCR_*"]
         YAML["config/config.yaml<br/>引擎顺序 + 策略"]
         PREC["优先级<br/>显式参数 > YAML > 环境变量 > 默认"]
         ENV --> PREC
@@ -17,7 +17,7 @@ flowchart TB
 
     subgraph PRESET["策略预设层 engine/registry.py(一次性)"]
         APPLY["apply_strategy_preset<br/>local / vl / fallback / quality"]
-        REMOTE["remote_engines()<br/>内置 siliconflow+multimodal<br/>JYKJ_OCR_REMOTE_ENGINES 可扩展"]
+        REMOTE["remote_engines()<br/>内置 multimodal<br/>JYKJ_OCR_REMOTE_ENGINES 可扩展"]
         ONESHOT["deepcopy 副本<br/>不改动 base config"]
         APPLY --> ONESHOT
         REMOTE --> APPLY
@@ -35,16 +35,14 @@ flowchart TB
     subgraph REG["引擎注册表 engine/ (惰性 import)"]
         REGISTRY["registry.py<br/>build_engine / build_pipeline<br/>resolve_retry_check"]
         REGISTRY -->|lazy| RAPID_IMP["rapidocr_engine"]
-        REGISTRY -->|lazy| MULTI_IMP["multimodal_engine<br/>(同时注册 multimodal 与 siliconflow 别名)"]
+        REGISTRY -->|lazy| MULTI_IMP["multimodal_engine<br/>(唯一的远程引擎类型,可配置多个实例)"]
     end
 
     subgraph ENGINES["引擎层 engines/"]
         RAPID["RapidOCREngine<br/>本地 ONNX,离线<br/>适配 1.x/1.4.x/2.x 返回形态"]
-        MULTI["MultimodalEngine<br/>OpenAI 兼容 /chat/completions<br/>image_url data-URI parts"]
-        SF["siliconflow 注册别名<br/>同一 MultimodalEngine 实例<br/>默认 PaddleOCR-VL-1.5(注入于 config.py)"]
+        MULTI["MultimodalEngine<br/>OpenAI 兼容 /chat/completions<br/>image_url data-URI parts<br/>任意平台(base_url + model 区分实例)"]
         RAPID -->|box+text+score| MODELS_MOD["models.py<br/>TextRegion.from_parts<br/>_UNSET 保留引擎置信度"]
         MULTI -->|text| MODELS_MOD
-        SF -->|text| MODELS_MOD
     end
 
     subgraph INPUT["输入解析 engine/inputs.py"]
@@ -67,13 +65,11 @@ flowchart TB
     ORCH --> REG
     RAPID_IMP --> RAPID
     MULTI_IMP --> MULTI
-    SF_IMP --> SF
 
     CLI -.->|source| LOAD
     LOAD --> PAGE
     PAGE -->|attach_pil| RAPID
     PAGE -->|attach_pil| MULTI
-    PAGE -->|attach_pil| SF
 
     MODELS_MOD --> OUT["OCRResult<br/>text + regions + engine + model + elapsed_ms"]
     OUT --> CLI
@@ -89,5 +85,5 @@ flowchart TB
     class ENV,YAML,PREC config
     class APPLY,REMOTE,ONESHOT preset
     class STRAT,RETRY,TIMED orch
-    class RAPID,MULTI,SF,MODELS_MOD eng
+    class RAPID,MULTI,MODELS_MOD eng
     class LOAD,PAGE input

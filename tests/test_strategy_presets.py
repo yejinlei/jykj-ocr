@@ -202,11 +202,11 @@ class TestApplyStrategyPreset:
             }
         )
         cfg = apply_strategy_preset(base, "local")
-        # "sf" is normalised to "siliconflow" by from_mapping, then
-        # classified remote (siliconflow is in _DEFAULT_REMOTE_ENGINES).
+        # "sf" is normalised to "multimodal" by from_mapping, then classified
+        # remote (multimodal is in _DEFAULT_REMOTE_ENGINES).
         assert [(e.name, e.enabled) for e in cfg.engines] == [
             ("rapidocr", True),
-            ("siliconflow", False),
+            ("multimodal", False),
         ]
 
 

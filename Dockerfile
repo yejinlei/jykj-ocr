@@ -11,7 +11,7 @@
 #
 # 本地一次性任务（不进容器服务）：
 #   docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
-#       python -m jykj_ocr /data/image.png --engine siliconflow
+#       python -m jykj_ocr /data/image.png --engine multimodal
 # ---------------------------------------------------------------------------
 FROM python:3.11-slim AS base
 
