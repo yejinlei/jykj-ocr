@@ -1062,6 +1062,10 @@ curl -s -X DELETE http://localhost:8000/config
 ```
 
 > `GET /config` 永远只返回 `has_api_key: true/false` 布尔值,绝不返回 key 明文。
+> 离线引擎(rapidocr)不读 URL / 模型 / key,所以它的 `model` 与 `base_url` 恒为空串、
+> `has_api_key` 恒为 `false`——即使同一条 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 环境变量
+> 已经解析出来了。否则会误导成「本地引擎也在打远程接口」。字段始终存在,只是值为空,
+> 客户端无需按引擎类型分支取值。
 
 ### 8.7 辅助端点
 
@@ -1078,6 +1082,8 @@ curl -s http://localhost:8000/engines
               {"name":"multimodal","resolved_name":"multimodal","enabled":true,
                "model":"PaddleOCR-VL-1.5","base_url":"https://api.moark.com/v1"}]}
 # configured 是实例级列表:每个 multimodal 条目各占一行,带 model/base_url 指纹,便于区分同名引擎
+# 本地引擎不读 URL/模型,key,所以 model 与 base_url 恒为空串(不会因为共享的
+# OPENAI_BASE_URL 而带上一个它从不使用的端点)
 ```
 
 ### 8.8 异常映射

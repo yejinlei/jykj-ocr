@@ -152,18 +152,39 @@ class RuntimeConfig:
             return bool(self._overrides)
 
 
+def _is_remote(engine: EngineConfig) -> bool:
+    """True when the entry talks to an HTTP endpoint (reads URL / model / key)."""
+    return normalise_engine(engine.name) in remote_engines()
+
+
 def _engine_view(engine: EngineConfig) -> Dict[str, Any]:
-    """Config view for clients — never echo API keys."""
+    """Config view for clients — never echo API keys.
+
+    Local engines (rapidocr) ignore ``base_url`` / ``model`` / ``api_key``
+    entirely, so echoing the *resolved* values would be misleading: those
+    properties still walk the shared ``OPENAI_BASE_URL`` / ``OPENAI_API_KEY``
+    fallback chain, meaning a purely offline entry would advertise a remote
+    endpoint and ``has_api_key: true`` it never uses. Blank those three for
+    local entries; the fields stay present so clients keep their shape.
+    """
+    if _is_remote(engine):
+        model, base_url, has_key = (
+            engine.resolved_model,
+            engine.resolved_base_url,
+            bool(engine.resolved_api_key),
+        )
+    else:
+        model, base_url, has_key = "", "", False
     return {
         "name": engine.name,
         "enabled": engine.enabled,
-        "model": engine.resolved_model,
-        "base_url": engine.resolved_base_url,
+        "model": model,
+        "base_url": base_url,
         "timeout": engine.timeout,
         "temperature": engine.temperature,
         "max_tokens": engine.max_tokens,
         "lang": engine.lang,
-        "has_api_key": bool(engine.resolved_api_key),
+        "has_api_key": has_key,
     }
 
 
@@ -572,7 +593,9 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
              description=(
                  "返回所有已注册引擎的描述 + 当前配置中的引擎清单。`configured` "
                  "是实例级列表(每个 multimodal 条目各占一行,附带 model/base_url "
-                 "指纹),便于在多实例部署下区分同名引擎。"
+                 "指纹),便于在多实例部署下区分同名引擎。本地引擎(rapidocr)不读 "
+                 "URL / 模型 / key,所以它的 model 与 base_url 恒为空串——只有真正 "
+                 "走 HTTP 的条目才有端点指纹。"
              ))
     async def engines() -> Dict[str, Any]:
         config = state.snapshot()
@@ -583,8 +606,8 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
                     "name": e.name,
                     "resolved_name": e.resolved_name,
                     "enabled": e.enabled,
-                    "model": e.resolved_model,
-                    "base_url": e.resolved_base_url,
+                    "model": e.resolved_model if _is_remote(e) else "",
+                    "base_url": e.resolved_base_url if _is_remote(e) else "",
                 }
                 for e in config.engines
             ],

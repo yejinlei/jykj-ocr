@@ -507,6 +507,63 @@ engines:
         serialized = r.text
         assert "sk-secret-1" not in serialized
 
+    def test_local_engine_shows_no_credentials(self, multi_client):
+        """``rapidocr`` runs fully offline, so ``GET /config`` must not advertise
+        a remote endpoint or a key for it. Without the guard the entry would
+        inherit the *shared* ``OPENAI_BASE_URL`` / ``OPENAI_API_KEY`` from the
+        resolved-* chain and look like it talks to a provider."""
+        tmp_path, monkeypatch = multi_client
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.com/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env-shared")
+        yaml_body = """
+engines:
+  - name: rapidocr
+  - name: multimodal
+    base_url: https://api.siliconflow.cn/v1
+    model: PaddlePaddle/PaddleOCR-VL-1.5
+    api_key: sk-entry
+"""
+        client = self._client_from_yaml(tmp_path, monkeypatch, yaml_body)
+        r = client.get("/config")
+        assert r.status_code == 200
+        local, remote = r.json()["engines"]
+
+        assert local["name"] == "rapidocr"
+        # Fields stay present so clients keep their shape — values are blanked.
+        assert local["base_url"] == ""
+        assert local["model"] == ""
+        assert local["has_api_key"] is False
+        assert "api_key" not in local
+        # Non-credential knobs of a local entry are untouched.
+        assert local["lang"] == "ch"
+        assert local["enabled"] is True
+
+        assert remote["base_url"] == "https://api.siliconflow.cn/v1"
+        assert remote["model"] == "PaddlePaddle/PaddleOCR-VL-1.5"
+        assert remote["has_api_key"] is True
+
+    def test_engines_endpoint_blank_for_local_engine(self, multi_client):
+        """The same rule applies to ``/engines.configured`` — only entries that
+        actually speak HTTP get a model/base_url fingerprint."""
+        tmp_path, monkeypatch = multi_client
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.com/v1")
+        yaml_body = """
+engines:
+  - name: rapidocr
+  - name: multimodal
+    base_url: https://api.siliconflow.cn/v1
+    model: PaddlePaddle/PaddleOCR-VL-1.5
+"""
+        client = self._client_from_yaml(tmp_path, monkeypatch, yaml_body)
+        configured = client.get("/engines").json()["configured"]
+        assert len(configured) == 2
+        local, remote = configured
+        assert local["name"] == "rapidocr"
+        assert local["base_url"] == ""
+        assert local["model"] == ""
+        assert remote["base_url"] == "https://api.siliconflow.cn/v1"
+        assert remote["model"] == "PaddlePaddle/PaddleOCR-VL-1.5"
+
 
 class TestStrategyKnobs:
     """Per-request ``retry_mode`` / ``score_mode`` / ``max_retries`` knobs.

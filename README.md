@@ -191,6 +191,11 @@ python -m jykj_ocr serve          # 或 JYKJ_OCR_PORT=9000 ...
 单次请求内切到另一个平台或账号,不需要动 `POST /config`。异常映射:`InputError → 400`、
 `EngineNotAvailable` / `StrategyError → 422`、`EngineError → 502`。
 
+`GET /config` 与 `GET /engines` 对离线引擎(rapidocr)不显示凭证:`model` 与 `base_url`
+为空串、`has_api_key` 为 `false`,即便共享的 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 已解析
+出来——本地引擎从不读这些值,显示出来只会误导。字段仍保留,只是值为空,客户端无需按
+引擎类型分支取值。
+
 ```bash
 curl -s http://localhost:8000/ocr -F "file=@image.png" -F "strategy_name=bestof"
 curl -s http://localhost:8000/ocr/bestof-fluency -F "file=@image.png"

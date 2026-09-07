@@ -163,6 +163,13 @@ docker compose up -d
   只有名单内的引擎响应 `model` / `prompt` 覆盖并被 `vl` 预设选中,其余引擎默认视为本地。
 - **`RuntimeConfig`**:线程安全,`POST /config` 的运行时覆盖在 `snapshot()` 时与 base config 合并,
   不返回 API key 明文(只暴露 `has_api_key` 布尔)。
+- **离线引擎不显示凭证**:`_engine_view`(即 `GET /config`)与 `GET /engines` 的 `configured`
+  对本地引擎(判据 `normalise_engine(name) in remote_engines()` 取反,见 `_is_remote`)把
+  `model`/`base_url` 置 `""`、`has_api_key` 置 `False`。因为 `resolved_base_url` /
+  `resolved_api_key` 即便对 rapidocr 也会回退到共享的 `OPENAI_BASE_URL` / `OPENAI_API_KEY`,
+  原样回显会谎报「本地引擎也在打远程接口」。字段仍保留(值置空),不按引擎类型删键——
+  `test_local_engine_shows_no_credentials` / `test_engines_endpoint_blank_for_local_engine`
+  锁死了该行为。
 - **异常映射**:`InputError → 400`,`EngineNotAvailable → 422`,`EngineError → 502`,`StrategyError → 422`。
 
 ## 引擎实测状态(均通过)
