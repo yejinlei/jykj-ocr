@@ -13,7 +13,7 @@
 #
 # name 可取的预设（仅供接口使用时的速查表）:
 #   local             只用本地引擎（rapidocr 等），远程引擎全部禁用
-#   vl                只用远程 VL 大模型（multimodal），本地引擎禁用
+#   vl                仅 1 条远程 VL 大模型（config 里第一条已启用的），本地引擎禁用
 #   seq               按 engines 顺序回退（retry_mode=no_text，默认行为）
 #   seq-any           seq + any 重试谓词 + 阅读顺序重排（= quality）
 #   seq-low_conf      seq + low_confidence 重试

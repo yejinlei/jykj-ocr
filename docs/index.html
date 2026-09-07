@@ -116,7 +116,7 @@
       <thead><tr><th>预设</th><th>引擎范围</th><th>重试判定</th><th>阅读顺序重排</th><th>适用场景</th></tr></thead>
       <tbody>
         <tr><td><code>local</code></td><td>仅本地(rapidocr 家族)</td><td><code>no_text</code></td><td>—</td><td>离线、隐私敏感、批量低成本</td></tr>
-        <tr><td><code>vl</code></td><td>仅远程 VL 大模型</td><td><code>no_text</code></td><td>—</td><td>版面复杂、手写、表格</td></tr>
+        <tr><td><code>vl</code></td><td>仅 1 条远程 VL 大模型(config 里第一条已启用的)</td><td><code>no_text</code></td><td>—</td><td>版面复杂、手写、表格</td></tr>
         <tr><td><code>seq</code></td><td>全部启用引擎按序回退</td><td><code>no_text</code></td><td>—</td><td>通用生产链路</td></tr>
         <tr><td><code>seq-any</code></td><td>同 seq + 窜行降级</td><td><code>any</code></td><td>✅</td><td>盖章/倾斜导致 rapidocr 窜行</td></tr>
         <tr><td><code>seq-low_conf</code></td><td>全部启用引擎</td><td><code>low_confidence</code></td><td>—</td><td>低置信度自动降级</td></tr>

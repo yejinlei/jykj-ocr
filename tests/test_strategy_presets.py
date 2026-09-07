@@ -142,22 +142,35 @@ class TestApplyStrategyPreset:
         assert cfg.strategy["retry_mode"] == "no_text"
         assert "reorder_lines" not in cfg.output
 
-    def test_vl_disables_locals_keeps_enabled_remote(self):
+    def test_vl_keeps_exactly_one_remote(self):
         cfg = apply_strategy_preset(_config(), "vl")
-        # Local engine (rapidocr) is disabled; the enabled remote stays
-        # enabled. Disabled remotes are not force-enabled when another
-        # remote is already enabled (baseline semantics).
+        # Local engine is disabled, and exactly one remote survives: the
+        # first enabled one in config order. The second (disabled) remote is
+        # NOT force-enabled — a multi-remote chain would make the returned
+        # model depend on the retry outcome.
         assert cfg.engines[0].name == "rapidocr"
         assert cfg.engines[0].enabled is False
-        assert any(e.enabled for e in cfg.engines[1:])
+        enabled = [e for e in cfg.engines if e.enabled]
+        assert len(enabled) == 1
+        assert enabled[0] is cfg.engines[1]
+        assert cfg.engines[2].enabled is False
 
-    def test_vl_enables_disabled_remotes_when_none_enabled(self):
+    def test_vl_builds_a_single_engine_pipeline(self):
+        cfg = apply_strategy_preset(_config(), "vl")
+        pipe = build_pipeline(cfg)
+        inner = pipe.engines() if callable(getattr(pipe, "engines", None)) else pipe.engines
+        assert len(inner) == 1
+
+    def test_vl_picks_first_remote_when_none_enabled(self):
         base = _config()
         for e in base.engines:
             if e.name != "rapidocr":
                 e.enabled = False
         cfg = apply_strategy_preset(base, "vl")
-        assert any(e.enabled for e in cfg.engines if e.name != "rapidocr")
+        enabled = [e for e in cfg.engines if e.enabled]
+        # No remote was enabled, so the first one in config order wins.
+        assert len(enabled) == 1
+        assert enabled[0] is cfg.engines[1]
 
     def test_vl_without_any_remote_raises(self):
         base = from_mapping({"engines": [{"name": "rapidocr", "enabled": True}]})

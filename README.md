@@ -46,7 +46,7 @@ engines:
 | 预设 | 引擎范围 | retry_mode | 文本重排 |
 |------|----------|------------|:--------:|
 | `local` | 仅本地,远程禁用 | `no_text` | ❌ |
-| `vl` | 仅 VL 大模型,本地禁用 | `no_text` | ❌ |
+| `vl` | 仅 1 条远程 VL(config 里第一条已启用的),其余禁用 | `no_text` | ❌ |
 | `seq` | 全部启用引擎(默认) | `no_text` | ❌ |
 | `seq-any` | 低置信度或窜行即降级 | `any` | ✅ 按坐标重建阅读顺序 |
 | `seq-low_conf` | 低置信度降级 | `low_confidence` | ❌ |

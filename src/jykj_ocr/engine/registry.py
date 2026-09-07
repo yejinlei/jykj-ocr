@@ -244,7 +244,9 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
 
     Presets (see ``STRATEGY_PRESETS``):
       - ``local``    only local (rapidocr-family) engines; plain no_text retry
-      - ``vl``       only remote VL engines; first enabled remote engine wins
+      - ``vl``       exactly one remote VL engine — the first *enabled* one in
+                     config order (the first one overall when none is enabled),
+                     so the returned model is deterministic
       - ``seq*``     first-acceptable-wins (:class:`StrategyEngine`); differ by
                      retry predicate and whether the final result is re-ordered
       - ``bestof*``  every engine runs once (:class:`BestofEngine`); the winner
@@ -301,17 +303,19 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
             engine.enabled = not _is_remote(engine)
     elif key == "vl":
         remotes = [e for e in cfg.engines if _is_remote(e)]
-        if not any(e.enabled for e in remotes):
-            if not remotes:
-                raise ValueError(
-                    "strategy 'vl' needs a remote engine (multimodal) "
-                    "configured; none found"
-                )
-            for engine in remotes:
-                engine.enabled = True
+        if not remotes:
+            raise ValueError(
+                "strategy 'vl' needs a remote engine (multimodal) "
+                "configured; none found"
+            )
+        # Keep exactly one remote: the first enabled one in config order, or
+        # the first one overall when none is enabled. A multi-remote retry
+        # chain makes the returned model depend on which result cleared the
+        # retry predicate — the same image can come back from a different
+        # model, which is not what "give me the VL answer" should mean.
+        chosen = next((e for e in remotes if e.enabled), remotes[0])
         for engine in cfg.engines:
-            if not _is_remote(engine):
-                engine.enabled = False
+            engine.enabled = engine is chosen
 
     # Write the retry mode (bestof family has no retry predicate).
     if retry_mode is not None:

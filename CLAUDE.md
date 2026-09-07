@@ -104,7 +104,9 @@ docker compose up -d
   - 顺序预设 `seq*`(走 `StrategyEngine`,首个命中即返回):
     `seq`(retry=no_text)/ `seq-any`(retry=any,reorder=on)= quality /
     `seq-low_conf`(retry=low_confidence)/ `seq-line_overlap`(retry=line_overlap)。
-    `local` 仅本地引擎 / `vl` 仅远程 VL 引擎(同 `StrategyEngine`,改 enabled 标志)。
+    `local` 仅本地引擎 / `vl` 仅 1 条远程 VL 引擎(config 里第一条已启用的,
+    其余远程禁用——多远程进重试链会让返回的模型随 retry 结果漂移,不可预测)
+    (同 `StrategyEngine`,改 enabled 标志)。
   - `cascade*` 家族:同 `StrategyEngine` 但 `max_retries=0`——被 reject 的尝试立刻降级
     下一引擎,不重试同一引擎。`cascade`(= seq 语义)/ `cascade-low_conf` /
     `cascade-line_overlap`。

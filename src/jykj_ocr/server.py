@@ -655,7 +655,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
 
         ``strategy`` / ``model`` 等为 JSON 字符串形式的临时配置，优先级高于
         ``/config`` 的运行时覆盖。``strategy_name`` 按命名预设整体切换引擎链
-        （``local`` 仅本地 / ``vl`` 仅 VL / ``seq*`` 顺序回退 /
+        （``local`` 仅本地 / ``vl`` 仅 1 条远程 VL / ``seq*`` 顺序回退 /
         ``bestof*`` 多引擎择优 / ``fallback`` 回退链 / ``quality`` 回退链+窜行降级+
         阅读顺序重排），同样只对本请求生效。
         """
@@ -770,7 +770,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             POST /ocr/bestof-fluency   # 语义流畅度优先
             POST /ocr/cascade          # 首个不达标立即降级到下一引擎(不重试)
             POST /ocr/quality          # 窜行降级 + 阅读顺序重排
-            POST /ocr/vl               # 仅远程大模型
+            POST /ocr/vl               # 仅 1 条远程大模型
 
         模型 / prompt / 格式 / 策略旋钮等仍可覆盖:
             POST /ocr/multimodal ... -F "model=qwen-vl-max" -F "format=text"
