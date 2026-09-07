@@ -41,6 +41,10 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 │   ├── cli.py               # argparse CLI(`jykj-ocr` / `serve` / `--list-engines` / `--engine` / `--strategy-name` / `--format`)
 │   └── server.py            # FastAPI /ocr /ocr/text /ocr/{preset} /ocr/{preset}/text /config /engines /presets /health
 ├── config/config.yaml       # 默认引擎+策略,api_key 有意省略(走环境变量);多实例示例已注释
+│   ├── config.local.yaml    # 示例 1:只本地 rapidocr(零凭据)
+│   ├── config.vl.yaml       # 示例 2:只远程 VL(硅基流动 + 模力方舟)
+│   ├── config.seq.yaml      # 示例 3:local + 1 远程兜底
+│   └── config.bestof.yaml   # 示例 4:local + 2 远程,bestof_mode: smart
 ├── tests/                   # pytest,212 个用例(212 passed)
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / pyproject.toml
@@ -124,6 +128,14 @@ docker compose up -d
   `should_retry_line_overlap` 判定是否重试;`combine_predicates` 组合出 `any` 模式。
 - **命名预设**:`apply_strategy_preset`(engine/registry.py)把 preset 展开为一次性配置副本;
   `build_pipeline` **不会**重新应用 preset(`strategy.name` 仅作记录)。
+- **yaml 里的 `strategy.name` 是文档字段,不生效**——实测 `name: local` 仍会加载远程引擎,
+  `name: bestof` 仍组装 `StrategyEngine`(`test_build_pipeline_does_not_reapply_preset` 锁死了
+  这一行为)。真正生效的只有 `bestof_mode`(单独触发 `BestofEngine`)、`max_retries`、
+  `retry_mode`、`min_confidence`;"只用本地/只用远程"靠的是条目里的 `enabled: false`。
+  预设交给接口(`--strategy-name` / `strategy_name` / `POST /ocr/{preset}`),示例配置
+  `config/config.{local,vl,seq,bestof}.yaml` 因此都不再写 `name`。
+- **无平台默认值**;`JYKJ_OCR_SILICONFLOW_*` / `SILICONFLOW_API_KEY` 也是死变量——
+  `resolved_name` normalise 后恒为 `MULTIMODAL`,所以只有 `JYKJ_OCR_MULTIMODAL_*` 会被读取。
 - **`TextRegion.from_parts`**:用 `_UNSET` 哨兵区分“调用方没传 confidence”与“真的传了 1.0”——
   引擎返回的 `score: 0.88` 不会被静默抹平为 1.0。
 - **`_PydanticBase`**:pydantic 可选;缺失时回退到 stdlib 轻量替代,保持离线容器可运行。

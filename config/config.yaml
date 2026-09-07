@@ -3,7 +3,14 @@
 
 # 策略链：按顺序尝试，前面的引擎失败/无文字时自动切换到下一个。
 #
-# name —— 命名预设（默认 fallback；API/CLI 可用 strategy_name 一次性覆盖）:
+# ⚠️ 下面的 name 字段**不生效**，只是文档——build_pipeline 从不读它切换预设，
+#    预设只能由接口一次性应用（CLI --strategy-name / HTTP strategy_name /
+#    /ocr/{preset} 路由）。yaml 里真正生效的只有：
+#      bestof_mode   单独写它 → 组装 BestofEngine 而非 StrategyEngine
+#      max_retries / retry_mode / min_confidence
+#    「只用本地 / 只用远程」靠 engines 条目里的 enabled: false。
+#
+# name 可取的预设（仅供接口使用时的速查表）:
 #   local             只用本地引擎（rapidocr 等），远程引擎全部禁用
 #   vl                只用远程 VL 大模型（multimodal），本地引擎禁用
 #   seq               按 engines 顺序回退（retry_mode=no_text，默认行为）

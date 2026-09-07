@@ -1,0 +1,40 @@
+# ============================================================================
+# 示例 1 —— 只使用本地引擎(rapidocr)
+#
+# 完全离线、不需要任何 API key,也不需要 .env。
+#
+# 用法:
+#   jykj-ocr -c config/config.local.yaml 图片.png
+#   jykj-ocr serve -c config/config.local.yaml --port 8000
+#
+# 「只用本地」靠的是 engines 里的 enabled 标志 —— 本文件没有任何远程条目被启用。
+# 预设交给接口,yaml 里的 strategy.name 不生效(build_pipeline 只读
+# bestof_mode / max_retries / retry_mode / min_confidence),所以这里不写:
+#   CLI:  jykj-ocr 图片.png --strategy-name local
+#   HTTP: POST /ocr/local   或 POST /ocr 带 strategy_name=local
+# ============================================================================
+
+strategy:
+  max_retries: 1     # 同一引擎最多重试几次(单引擎时只会自己重试)
+  retry_mode: no_text
+  min_confidence: 0.7
+
+output:
+  format: markdown
+
+pdf:
+  max_pages: 50
+  dpi: 200
+
+engines:
+  # 唯一启用的引擎 —— 本地 ONNX 推理,无网络依赖
+  - name: rapidocr
+    lang: ch         # 中英混合
+    enabled: true
+    timeout: 30      # 兰亭序实测 ~10s,30s 给大文档留余量
+
+  # 远程条目刻意不启用:本示例的目标就是零凭据运行
+  # - name: multimodal
+  #   enabled: false
+  #   base_url: https://api.moark.com/v1
+  #   model: PaddleOCR-VL-1.5

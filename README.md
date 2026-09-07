@@ -1,354 +1,224 @@
 # jykj_ocr
 
-多引擎 OCR 服务:同时支持本地 **RapidOCR**(离线、无需 API key)与多模态 OCR 大模型
-(硅基流动 / 任意 OpenAI 兼容端点),通过策略层编排调用顺序与重试逻辑,对外提供
-CLI、Python API 与 FastAPI HTTP 接口。
+多引擎 OCR 服务:本地 **RapidOCR**(离线、零凭据)+ 远程多模态大模型(任意 OpenAI
+兼容端点),策略层编排调用顺序与重试,对外提供 CLI、Python API 与 FastAPI 接口。
 
 ```
 ┌──────────┐   ┌────────────┐   ┌──────────────────────────────────┐
-│ CLI / API│──▶│ Strategy   │──▶│ rapidocr (local ONNX, offline)   │
-│ / HTTP   │   │ (重试链)   │   │ multimodal (OpenAI-compatible)   │
-└──────────┘   └────────────┘   │ any platform (base_url + model)  │
-                                └──────────────────────────────────┘
+│ CLI / API│──▶│  Strategy  │──▶│ rapidocr   (本地 ONNX,离线)      │
+│  / HTTP  │   │ (重试链)   │   │ multimodal (OpenAI 兼容,任意平台) │
+└──────────┘   └────────────┘   └──────────────────────────────────┘
 ```
 
 ## 引擎
 
-| 引擎 | 类型 | 需 API key | 默认模型 | 说明 |
-|------|------|:----------:|---------|------|
-| `rapidocr` | 本地 ONNX | ❌ | — | RapidOCR-onnxruntime,离线可用,中英文 |
-| `multimodal` | 远程多模态 | ✅ | `PaddleOCR-VL-1.5`(留空时) | 通用 OpenAI 兼容端点,**一个类型、无限实例** |
+只有两个引擎类型:
 
-**平台不是引擎**。硅基流动、模力方舟(moark)、阿里云百炼、火山方舟、智谱、本地 vLLM
-都只是「平台」——它们由条目里的 `base_url` + `model` 区分,不是额外的引擎类型。
-全项目只有上表两个类型。想直接用硅基流动:
+| 引擎 | 类型 | API key | 留空时的默认模型 |
+|------|------|:-------:|-----------------|
+| `rapidocr` | 本地 ONNX | ❌ | — |
+| `multimodal` | 远程多模态 | ✅ | `PaddleOCR-VL-1.5` |
+
+**平台不是引擎。** 硅基流动、模力方舟、阿里云百炼、火山方舟、智谱、本地 vLLM 都只是
+平台,由条目里的 `base_url` + `model` 区分,不是额外的引擎类型。`multimodal` 是
+「类型」不是「实例 id」——config 里可以写任意多条,由 `(base_url, model, api_key)` 区分:
 
 ```yaml
 engines:
-  - name: multimodal
-    base_url: https://api.siliconflow.cn/v1   # 硅基流动
-    model: PaddlePaddle/PaddleOCR-VL-1.5      # 该平台要求带厂商前缀
+  - name: multimodal                 # 硅基流动:模型 ID 带厂商前缀
+    base_url: https://api.siliconflow.cn/v1
+    model: PaddlePaddle/PaddleOCR-VL-1.5
+  - name: multimodal                 # 模力方舟:裸模型 ID;base_url 留空走 OPENAI_BASE_URL
+    model: Qwen3-VL-30B-A3B-Instruct
 ```
 
-只认裸模型 ID 的平台(如模力方舟)则写 `model: Qwen3-VL-30B-A3B-Instruct`,
-`base_url` 留空走 `OPENAI_BASE_URL` 环境变量即可。
-
-**多实例**:`multimodal` 是「类型」不是「实例 id」。config.yaml 里可以写任意多条
-`name: multimodal`,每条实例化为一个独立的 `MultimodalEngine`,由
-`(base_url, model, api_key)` 区分。三种常见搭配:
-
-1. **同厂商不同模型** — `base_url`/`api_key` 相同,只换 `model`
-2. **不同厂商** — `base_url` 不同(硅基流动 / 模力方舟 moark / 火山 ark / 百炼 / 本地 vLLM)
-3. **同厂商不同账号** — `base_url`/`model` 相同,只换 `api_key`
-
-完全相同的六条 tuple 会在解析时合并为一条(第一条胜出)。注意环境变量按「类型」命名
-(`JYKJ_OCR_MULTIMODAL_API_KEY`),不会按实例区分——需要区分账号时必须在条目里显式写
-`api_key`。
-
-**引擎别名**(`config.normalise_engine`):`rapid`/`rapid-ocr`/`rapidocr-onnx` → `rapidocr`;
-`multi`/`openai`/`openai-compat`/`openai-compatible`/`llm` → `multimodal`;
-`sf`/`silicon-flow`/`silicon_flow`/`siliconflow` → `multimodal`。
-别名只为兼容旧配置:写 `name: siliconflow` 与写 `name: multimodal` 现在完全等价,
-返回结果里的 `engine` 字段一律是 `multimodal`。
-
-远程引擎统一走 **OpenAI 兼容协议**(`POST /chat/completions`,`messages` 数组 +
-`image_url` data-URI content parts),只依赖 `requests`,不引入 `openai` SDK。
+完全相同的条目解析时合并为一条(第一条胜出)。`rapid` / `openai` / `siliconflow` 等
+别名一律归一化到上面两个类型,结果里的 `engine` 字段只有 `rapidocr` 或 `multimodal`。
+远程引擎走 OpenAI 兼容 `/chat/completions`,只依赖 `requests`(不引入 `openai` SDK)。
 
 ## 策略预设
 
-配置文件固定**默认策略**,API/CLI 可按请求**一次性切换**预设(不改动任何配置,
-只在本次请求生效)。
+配置文件定**默认策略**;CLI / HTTP 可按请求**一次性切换**(不动配置,只作用于本次请求)。
 
-**顺序预设**(`seq*`,按引擎顺序尝试,首个命中即返回):
+**顺序预设** `seq*` / `cascade*` — 按引擎顺序尝试,首个命中即返回;`cascade*` 与
+`seq*` 共用同一套逻辑,区别只在被 reject 后是否重试同一引擎(`max_retries=0`)。
 
 | 预设 | 引擎范围 | retry_mode | 文本重排 |
 |------|----------|------------|:--------:|
-| `local` | 仅本地(rapidocr 等),远程禁用 | `no_text` | ❌ |
-| `vl` | 仅 VL 大模型(multimodal),本地禁用 | `no_text` | ❌ |
-| `seq` | 全部启用引擎,按配置顺序回退(默认) | `no_text` | ❌ |
-| `seq-any` | 同 seq,但低置信度或窜行即降级 | `any` | ✅ 按坐标重建阅读顺序 |
-| `seq-low_conf` | 低置信度时自动降级 | `low_confidence` | ❌ |
-| `seq-line_overlap` | 窜行时自动降级 | `line_overlap` | ❌ |
-| `cascade` | 同 seq,但 `max_retries=0`(不重试同一引擎,直接降级) | `no_text` | ❌ |
-| `cascade-low_conf` | cascade + 低置信度降级 | `low_confidence` | ❌ |
-| `cascade-line_overlap` | cascade + 窜行降级 | `line_overlap` | ❌ |
+| `local` | 仅本地,远程禁用 | `no_text` | ❌ |
+| `vl` | 仅 VL 大模型,本地禁用 | `no_text` | ❌ |
+| `seq` | 全部启用引擎(默认) | `no_text` | ❌ |
+| `seq-any` | 低置信度或窜行即降级 | `any` | ✅ 按坐标重建阅读顺序 |
+| `seq-low_conf` | 低置信度降级 | `low_confidence` | ❌ |
+| `seq-line_overlap` | 窜行降级 | `line_overlap` | ❌ |
+| `cascade*` | 同上三个,但不重试同一引擎 | 见括号后缀 | ❌ |
 
-`cascade*` 与 `seq*` 共用同一套 `StrategyEngine` 逻辑,区别只在被 reject 的尝试是否重试同一引擎。
+**最佳预设** `bestof*` — 所有引擎各跑一次,按评分选最佳(比 `seq*` 慢,但拿到候选里
+最好的结果):`bestof` / `bestof-smart`(置信度 − 窜行惩罚 + 文本长度 + 语义流畅度,
+默认)/ `bestof-fastest` / `bestof-confidence` / `bestof-longest` / `bestof-fluency` /
+`bestof:<mode>`(冒号别名)。
 
-**最佳策略**(`bestof*`,所有引擎各跑一次,按评分选最佳):
-
-| 预设 | 评分函数 |
-|------|----------|
-| `bestof` / `bestof-smart` | 置信度 − 窜行惩罚 + 文本长度奖赏(综合最优) |
-| `bestof-fastest` | 耗时最低 |
-| `bestof-confidence` | 平均置信度最高 |
-| `bestof-longest` | 文本最长 |
-| `bestof-fluency` | 语义流畅度(短语密度 + CJK 标点 − 单字碎片惩罚) |
-| `bestof:<mode>` | 等价于 `bestof-mode` |
-
-`bestof` 比 `seq*` 慢(所有引擎都跑),但能拿到所有候选里最好的结果。
-
-**legacy 别名**:`fallback` == `seq` / `quality` == `seq-any`(保留兼容)。
-
-`retry_mode` 可选值:`no_text` / `low_confidence` / `line_overlap` / `any` / `none`;
-`output.reorder_lines: true` 可单独开启阅读顺序重排。
-
-**future-proof**:预设按「远程引擎白名单」划分引擎,新接入的引擎(PaddleOCR、
-Tesseract、其他云厂商…)无需改预设代码——注册后默认归入本地侧;若新引擎是
-远程端点,设 `JYKJ_OCR_REMOTE_ENGINES="a,b"` 把它标为远程即可被 `vl` 选中。
-
-```bash
-# CLI
-python -m jykj_ocr image.png --strategy-name quality        # seq-any,窜行降级
-python -m jykj_ocr image.png --strategy-name bestof         # 所有引擎各跑一次
-python -m jykj_ocr image.png --strategy-name bestof-fastest
-
-# HTTP
-curl -s http://localhost:8000/ocr -F "file=@image.png" -F "strategy_name=bestof"
-
-# HTTP JSON
-curl -s http://localhost:8000/ocr/text -H "Content-Type: application/json" \
-  -d '{"image_url":"https://example.com/scan.png","strategy_name":"bestof-longest"}'
-
-# Python API
-results = jykj_ocr.ocr("image.png", strategy_name="bestof-smart")
-```
-
-优先级:**单次请求的 `strategy_name` > `POST /config` 运行时覆盖 > config.yaml**。
-未知预设名返回 HTTP 400 并列出有效值。
+legacy 别名:`fallback` == `seq`,`quality` == `seq-any`。`retry_mode` 可选
+`no_text` / `low_confidence` / `line_overlap` / `any` / `none`。
 
 ## 安装
 
 ```bash
-# 1. 创建虚拟环境(Python 3.10+)
 python -m venv .venv
-.venv/Scripts/activate          # Windows
-# source .venv/bin/activate      # Linux/macOS
-
-# 2. 安装依赖(含测试所需 httpx;rapidocr-onnxruntime 已包含)
+.venv/Scripts/activate              # Windows;Linux/macOS 用 source .venv/bin/activate
 pip install -r requirements.txt
-
-# 3. 以 editable 模式安装本包(可选,提供 jykj-ocr 命令)
-pip install -e .
+pip install -e .                    # 可选,提供 jykj-ocr 命令
 ```
 
-> `requirements.txt` 自包含,`pip install -r requirements.txt` 后即可通过
-> `pytest tests -q` 运行全部测试。
+`requirements.txt` 自包含,无需任何系统包(见下)。
 
-### rapidocr 引擎的 OpenCV 依赖(headless)
-
-`rapidocr-onnxruntime` 的传递依赖是 GUI 版 `opencv-python`,它在 **Linux**
-上 import 时需要系统库 `libGL.so.1`/`libglib2.0`(slim 镜像与最小化服务器
-默认没有)。缺失时 `import cv2` 抛 ImportError,被引擎层误报为
-`"RapidOCR is not installed"`(HTTP 422)——即使 pip list 显示已安装。
-
-本项目在 `requirements.txt` 中**先装 `opencv-python-headless`** 顶替 GUI 版
-(功能对 OCR 完全等价,不链接 libGL),因此**无需任何 apt 系统包**,
-Windows/Linux/Docker 统一一条 `pip install -r requirements.txt` 即可。
-
-已经踩过这个坑的存量环境(如已装 GUI 版 opencv-python),二选一修复:
-
-```bash
-# 方案 A(推荐,与 requirements.txt 一致):换 headless,注意必须先卸载 GUI 版
-pip uninstall -y opencv-python && pip install "opencv-python-headless>=4.9,<6"
-
-# 方案 B:保留 GUI 版,补系统库(Debian / Ubuntu)
-apt-get update && apt-get install -y libgl1 libglib2.0-0
-```
-
-排查真实原因(逐层 import 并打印原始错误):
-
-```bash
-.venv/bin/python scripts/diag_rapidocr_import.py
-```
+**rapidocr 的 OpenCV 依赖**:传递依赖默认是 GUI 版 `opencv-python`,在 Linux 最小化镜像
+上 import 需要系统库 `libGL.so.1`。本项目改装 `opencv-python-headless`(OCR 功能等价,
+不链接 libGL),因此 Windows / Linux / Docker 都是同一条 `pip install`。存量环境若已装
+GUI 版,先 `pip uninstall -y opencv-python` 再装 headless,或用
+`scripts/diag_rapidocr_import.py` 逐层打印真实 import 错误。
 
 ## 配置
 
-API key 只通过**环境变量**提供,绝不写入配置文件或代码:
+一份配置文件搞定一切:`engines`(引擎条目)+ `strategy`(默认策略)+ `output` + `pdf`。
+仓库自带 4 份示例,用 `-c` 选:
 
-```bash
-cp .env.example .env              # 复制模板,填入真实 key
-# .env 已在 .gitignore 中,不会被提交
-```
+| 文件 | 内容 |
+|------|------|
+| `config/config.local.yaml` | 示例 1:只本地 rapidocr,零凭据 |
+| `config/config.vl.yaml` | 示例 2:只远程 VL(硅基流动 + 模力方舟) |
+| `config/config.seq.yaml` | 示例 3:本地 + 1 个远程兜底 |
+| `config/config.bestof.yaml` | 示例 4:本地 + 2 个远程,bestof 评分选最佳 |
 
-远程引擎统一用一对环境变量,切换平台只需改这两个值:
+**API key 两种来源**:`export OPENAI_API_KEY=sk-...`(推荐)或写进 yaml 条目的
+`api_key` 字段。只有「同时启用多个不同平台」时才必须写进 yaml——环境变量按「类型」
+命名,`OPENAI_BASE_URL` 被所有 `multimodal` 条目共享,无法区分平台。
 
 | 变量 | 用途 |
 |------|------|
-| `OPENAI_API_KEY` | 通用 API key,适配任意 OpenAI 兼容平台 |
-| `OPENAI_BASE_URL` | 端点 URL(硅基流动 / 阿里云百炼 / 智谱 / 本地 vLLM 等) |
-| `JYKJ_OCR_<NAME>_API_KEY` | 按「类型」命名的专用 key,优先于 `OPENAI_API_KEY` |
+| `OPENAI_API_KEY` | 通用 key,适配任意 OpenAI 兼容平台 |
+| `OPENAI_BASE_URL` | 端点 URL(换平台只改这一行) |
+| `JYKJ_OCR_<NAME>_API_KEY` | 按类型命名的专用 key,优先于 `OPENAI_API_KEY` |
+| `JYKJ_OCR_CONFIG` / `JYKJ_OCR_PORT` | 配置文件路径 / 服务端口 |
 
-**配置优先级**(高 → 低):显式参数 > `config/config.yaml` > 环境变量(`JYKJ_OCR_*`、
-`JYKJ_OCR_<NAME>_API_KEY`、`<NAME>_API_KEY`、`OPENAI_API_KEY`、`OPENAI_BASE_URL`)>
-内置默认值。base URL 与模型名都没有厂商默认——base URL 解析不出来就
-`EngineNotAvailable`,而不是静默指向某个平台(那样 A 平台的 key 会被发给 B 平台,
-最后只表现为一个说不清原因的 HTTP 401)。唯一保留的默认是模型名:留空时用
-裸 ID `PaddleOCR-VL-1.5`,只适用于认裸 ID 的平台。
+**优先级**(高 → 低):单次请求参数(`--strategy-name`、`strategy_name`、`/ocr/{preset}`
+路由) > `POST /config` 运行时覆盖 > yaml 字段 > 环境变量 > 内置默认值。
+方向是「yaml 有值就用 yaml,留空才回退环境变量」——**环境变量不会覆盖 yaml 里已写的值**。
+唯一保留的默认是模型名 `PaddleOCR-VL-1.5`;base URL 没有厂商默认,解析不出来直接
+`EngineNotAvailable`(静默回退到某个平台会把 A 平台的 key 发给 B,只表现为一个说不清
+原因的 HTTP 401)。
 
-注意方向:三个 `resolved_*` 都是「yaml 有值就用 yaml,留空才回退环境变量」,所以
-**环境变量不会覆盖 yaml 里已写的字段**。想让 `OPENAI_BASE_URL` 决定平台,
-把 `config.yaml` 里的 `base_url` 留空即可(仓库默认配置就是这样)。
-另外 `.env` 只在进程启动时读取一次,改完必须重启服务。
+**yaml 里的 `strategy.name` 不生效**,它只是文档字段——预设交给接口。真正生效的只有
+`bestof_mode`(单独触发 `BestofEngine`)、`max_retries`、`retry_mode`、`min_confidence`;
+「只用本地 / 只用远程」靠条目里的 `enabled: false`。`.env` 只在进程启动时读一次,
+改完必须重启。
 
 ## CLI
 
 ```bash
-# 列出可用引擎
 python -m jykj_ocr --list-engines
-
-# 识别图片(指定引擎)
 python -m jykj_ocr image.png --engine multimodal --format json
 python -m jykj_ocr doc.pdf   --engine rapidocr  --format markdown -o out.md
-
-# 不指定引擎 → 走 config.yaml 中的策略链(rapidocr → multimodal)
-python -m jykj_ocr image.png
-
-# 启动 HTTP 服务
-python -m jykj_ocr serve --port 8000
+python -m jykj_ocr image.png --strategy-name bestof   # 一次性预设
+python -m jykj_ocr image.png                          # 不指定引擎 → 走策略链
+python -m jykj_ocr serve --port 8000                  # 启动 HTTP 服务
 ```
 
 | 参数 | 说明 |
 |------|------|
 | `source` | 图片/PDF 路径或 `http(s)://` URL |
 | `-c` / `--config` | 配置文件路径(默认 `config/config.yaml`) |
-| `--engine` | 强制使用某引擎,忽略策略链 |
-| `--strategy-name` | 一次性策略预设:`local` \| `vl` \| `seq*` \| `bestof*` |
+| `--engine` | 强制某引擎,绕过策略链 |
+| `--strategy-name` | 一次性预设:`local` \| `vl` \| `seq*` \| `bestof*` |
 | `--format` | `text` \| `markdown` \| `json`(默认 `text`) |
 | `-o` / `--output` | 输出文件;缺省打印到 stdout |
-| `--max-pages` | PDF 最多处理页数 |
-| `--dpi` | PDF 渲染 DPI(默认 200) |
-| `serve` | 启动 FastAPI 服务(`--host` / `--port`);关键字,放在任意位置均可 |
-
-OCR 与 `serve` 共用同一组选项,`--host` / `--port` 仅在 `serve` 时生效。
-`serve` 刻意实现为关键字而不是 argparse 子命令——子命令会与位置参数 `source`
-争抢同一份 token 流,导致 `jykj_ocr image.png` 报 `invalid choice`(见 tests/test_cli.py)。
+| `--max-pages` / `--dpi` | PDF 最多页数 / 渲染 DPI(默认 200) |
+| `serve` | 关键字(非子命令),放任意位置均可;此时 `--host` / `--port` 生效 |
 
 ## Python API
 
 ```python
 import jykj_ocr
 
-# 指定引擎
-results = jykj_ocr.ocr("image.png", engine="multimodal")
-print(results[0].text, results[0].model)
+results = jykj_ocr.ocr("image.png", engine="multimodal")   # 指定引擎
+results = jykj_ocr.ocr("doc.pdf")                          # 走策略链
+text    = jykj_ocr.ocr_to_text("image.png", engine="rapidocr")
 
-# 走策略链(配置文件中的引擎顺序)
-results = jykj_ocr.ocr("doc.pdf")
-
-# 只拿拼接好的 markdown 文本
-text = jykj_ocr.ocr_to_text("image.png", engine="rapidocr")
+jykj_ocr.ocr("image.png", strategy_name="bestof-smart")
 ```
 
-`ocr(source, *, engine=None, config=None, config_path=None, max_pages=None, dpi=200, retries=1, strategy_name=None)`
-→ `List[OCRResult]`,每页一个。`source` 必须是文件路径或 `http(s)://` URL
-(不接受裸 bytes)。`strategy_name` 一次性应用命名预设(`local`/`vl`/`seq*`/`bestof*`),
-只作用于本次调用的配置副本。
+`ocr(source, *, engine=None, config=None, config_path=None, max_pages=None, dpi=200,
+retries=1, strategy_name=None) -> List[OCRResult]`,每页一个。`source` 接受路径或
+`http(s)://` URL,不接受裸 bytes。
 
 ## HTTP API
 
 ```bash
-python -m jykj_ocr serve          # 或 JYKJ_OCR_PORT=9000 python -m jykj_ocr serve
+python -m jykj_ocr serve          # 或 JYKJ_OCR_PORT=9000 ...
 ```
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/health` | 健康检查 |
-| `GET` | `/engines` | 可用引擎列表 + 当前配置的引擎顺序 |
-| `GET` | `/presets` | 全部命名策略预设的元数据(评分模式、重试判定、引擎范围) |
-| `GET` | `/config` | 当前生效配置(**不返回 API key 明文**,仅 `has_api_key` 布尔) |
-| `POST` | `/config` | 运行时覆盖配置(引擎/模型/策略),无需重启 |
-| `DELETE` | `/config` | 清除运行时覆盖,回到配置文件状态 |
-| `POST` | `/ocr` | 上传图片/PDF 识别(multipart) |
-| `POST` | `/ocr/text` | 按图片 URL 识别(JSON) |
-| `POST` | `/ocr/{preset}` | 路由即策略:多部件上传(preset=引擎名 或 策略预设名) |
-| `POST` | `/ocr/{preset}/text` | 路由即策略:按图片 URL(JSON) |
+| `GET` | `/engines` | 可用引擎 + 当前引擎顺序 |
+| `GET` | `/presets` | 全部命名预设的元数据 |
+| `GET` / `POST` / `DELETE` | `/config` | 查看 / 运行时覆盖 / 清除覆盖(不返回 key 明文) |
+| `POST` | `/ocr` | multipart 上传识别 |
+| `POST` | `/ocr/text` | JSON body,按 `image_url` / `image_b64` / `image_data` |
+| `POST` | `/ocr/{preset}` | 路由即策略(multipart) |
+| `POST` | `/ocr/{preset}/text` | 路由即策略(JSON) |
 
-四个 OCR 端点返回结构完全一致:`{pages, text, engine, page_count}`;`format=text/markdown` 时退化为纯文本。
-
-**POST /ocr** 示例:
-
-```bash
-curl -s http://localhost:8000/ocr \
-  -F "file=@image.png" \
-  -F "engine=multimodal" \
-  -F "format=json" | python -m json.tool
-```
-
-form 字段:`file`(必填)、`engine`、`model`、`prompt`、`strategy`(JSON 字符串)、
-`strategy_name`(`local`/`vl`/`seq*`/`bestof*`,一次性预设,见策略预设章节)、
-`max_pages`、`dpi`、`format`(`json`/`text`/`markdown`)。`model`/`prompt` 仅对远程引擎
-(`multimodal`,或 `JYKJ_OCR_REMOTE_ENGINES` 额外标定的引擎)生效,
-本地 `rapidocr` 不受影响。
-
-**POST /ocr/text** 示例:
+四个 OCR 端点返回结构一致:`{pages, text, engine, page_count}`;`format=text/markdown`
+时退化为纯文本。form / JSON 字段:`file` 或 `image_url`/`image_b64`/`image_data`、
+`engine`、`model`、`prompt`、`strategy`(JSON 字符串)、`strategy_name`、`retry_mode`、
+`score_mode`、`max_retries`、`max_pages`、`dpi`、`format`。`model` / `prompt` 只对
+远程引擎生效。异常映射:`InputError → 400`、`EngineNotAvailable` / `StrategyError → 422`、
+`EngineError → 502`。
 
 ```bash
-curl -s http://localhost:8000/ocr/text \
-  -H "Content-Type: application/json" \
-  -d '{"image_url":"https://example.com/scan.png","engine":"multimodal"}'
+curl -s http://localhost:8000/ocr -F "file=@image.png" -F "strategy_name=bestof"
+curl -s http://localhost:8000/ocr/bestof-fluency -F "file=@image.png"
+curl -s http://localhost:8000/ocr/text -H "Content-Type: application/json" \
+  -d '{"image_url":"https://example.com/scan.png"}'
+curl -s -X POST http://localhost:8000/config -H "Content-Type: application/json" \
+  -d '{"engines":[{"name":"multimodal","model":"Qwen3-VL-30B-A3B-Instruct"}]}'
 ```
-
-**运行时覆盖**(改模型不重启):
-
-```bash
-curl -s -X POST http://localhost:8000/config \
-  -H "Content-Type: application/json" \
-  -d '{"engines":[{"name":"multimodal","model":"Qwen/Qwen2.5-VL-72B"}]}'
-```
-
-**异常映射**:`InputError → 400`、`EngineNotAvailable → 422`、`EngineError → 502`、
-`StrategyError → 422`。
 
 ## Docker
 
 ```bash
-# 单服务
 docker build -t jykj_ocr .
 docker run --rm -p 8000:8000 --env-file .env jykj_ocr
 
-# compose(含 healthcheck、模型权重持久化卷)
-docker compose up --build
+docker compose up --build                      # 含 healthcheck、权重持久化卷
 
-# 容器内一次性任务
 docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
     python -m jykj_ocr /data/image.png --engine multimodal
 ```
 
-镜像 `python:3.11-slim`、非 root 用户、含 `HEALTHCHECK`;配置与端口通过
+镜像 `python:3.11-slim`、非 root、含 `HEALTHCHECK`;配置与端口通过
 `JYKJ_OCR_CONFIG` / `JYKJ_OCR_PORT` 注入。
 
 ## 测试
 
 ```bash
-.venv/Scripts/python -m pytest tests -q     # 全部离线,无真实 API 调用
+.venv/Scripts/python -m pytest tests -q       # 212 个用例,全部离线,无真实 API 调用
 ```
 
-212 个用例覆盖:models(边界框/文本区域/置信度保留)、config(别名归一化/YAML/环境变量
-优先级/多 multimodal 实例去重)、strategy(重试链/谓词)、engines(multimodal 的 OpenAI 响应解析
-/ rapidocr 的 1.x 3-tuple 与 1.4.x 2-tuple 返回形态)、server(HTTP 路由与预设、
-`TextRequest.source()` 三种图片来源)、presets(`seq*`/`cascade*`/`bestof*` 展开)、
-cli(argparse 解析:`serve` 关键字不被误判为位置参数、JSON 输出、退出码、
-`JYKJ_OCR_PORT` 默认端口)。
+覆盖 models、config(别名归一化 / YAML / 环境变量优先级 / 多实例去重)、strategy
+(重试链 / 谓词)、engines(multimodal 的 OpenAI 响应解析、rapidocr 的 1.x / 1.4.x 返回
+形态)、server(HTTP 路由与预设、三种图片来源)、presets(`seq*` / `cascade*` / `bestof*`)、
+cli(`serve` 关键字解析、JSON 输出、退出码)。
 
-端到端接口测试(需联网与真实模型,非 CI 基线):
+真实模型回归(需联网与真实 key,非 CI 基线):
 
 ```bash
-# 全场景演示脚本
 export OPENAI_API_KEY=...  OPENAI_BASE_URL=https://api.siliconflow.cn/v1
-.venv/Scripts/python scripts/demo.py --ci
-
-# 接口 + 全部策略预设的真实模型回归(34 项,约 7 分钟)
-# 会打全部 10 个 HTTP 端点 + 18 个策略预设,结果写 real_model_e2e_result.json
-JYKJ_OCR_PORT=8010 .venv/Scripts/python -m jykj_ocr serve &
-.venv/Scripts/python scripts/real_model_e2e.py http://127.0.0.1:8010 tests/兰亭序.jpeg
-# 退出码 = 失败项数;通过 = 接口契约与策略层在真实远程模型上均可用
+.venv/Scripts/python scripts/demo.py --ci                    # 全场景演示
+JYKJ_OCR_PORT=8010 .venv/Scripts/python -m jykj_ocr serve &  # 起服务
+.venv/Scripts/python scripts/real_model_e2e.py \
+    http://127.0.0.1:8010 tests/兰亭序.jpeg                   # 34 项,约 7 分钟
 ```
-
-`real_model_e2e.py` 抓到的问题举例:`image_data` 字段文档写的是「完整 data URI」,
-实现却无条件再加一层 `data:` 前缀,导致合法输入变成
-`data:application/octet-stream,data:image/...` 并被 400 拒绝——
-离线测试全绿时这种契约不一致完全看不出来。
 
 ## 项目布局
 
@@ -358,45 +228,18 @@ src/jykj_ocr/
 ├── config.py              # Config / EngineConfig / load_config / normalise_engine
 ├── models.py              # Point / BoundingBox / TextRegion / OCRResult
 ├── strategy.py            # StrategyEngine / BestofEngine / 重试谓词
-├── engine/
-│   ├── __init__.py        # 惰性注册(lazy import,不引入 PIL/rapidocr/openai)
-│   ├── base.py            # BaseEngine / PageImage / EngineNotAvailable / registry
-│   ├── inputs.py          # 图片/PDF/URL → PageImage
-│   └── registry.py        # build_engine / build_pipeline / apply_strategy_preset / remote_engines / _SEQ_PRESETS
-├── engines/
-│   ├── rapidocr_engine.py     # RapidOCREngine(适配 1.x/1.4.x/2.x 返回形态)
-│   └── multimodal_engine.py   # MultimodalEngine(OpenAI 兼容,唯一远程类型)
-├── cli.py               # argparse CLI
-└── server.py            # FastAPI /ocr /ocr/text /ocr/{preset}(/text) /config /engines /presets /health
-config/config.yaml       # 默认引擎 + 策略(可含多条 multimodal 实例)
-tests/                   # pytest,212 passed
-scripts/                 # 诊断与接口测试脚本
-Dockerfile / docker-compose.yml
-requirements.txt / pyproject.toml
-.env.example            # 环境变量模板(真实 .env 已 gitignore)
+├── engine/                # 惰性注册 / base / inputs / registry
+├── engines/               # rapidocr_engine.py / multimodal_engine.py
+├── cli.py                 # argparse CLI
+└── server.py              # FastAPI 路由
+config/                    # config.yaml + 4 份示例(见「配置」章节)
+tests/                     # pytest,212 passed
+scripts/                   # 诊断与真实模型回归脚本
+Dockerfile / docker-compose.yml / requirements.txt / pyproject.toml
 ```
 
-## 架构要点
-
-- **惰性注册**:`import jykj_ocr` 不加载 PIL/rapidocr/openai,引擎按需 import。
-- **策略引擎**:`StrategyEngine` 按顺序尝试(首个命中即返回),`should_retry_no_text` /
-  `should_retry_low_confidence` / `should_retry_line_overlap` 判定是否重试与切换;
-  `BestofEngine` 所有引擎各跑一次,按 smart/fastest/highest_confidence/longest 评分选最佳。
-- **命名预设**:`apply_strategy_preset` 把 `local`/`vl`/`seq*`/`bestof*`(含 legacy `fallback`/`quality` 别名)展开为
-  一次性配置副本(deepcopy,输入 config 永不被改动);远程/本地划分走
-  `remote_engines()` 白名单,新引擎零改动接入。
-- **`TextRegion.from_parts`**:用 `_UNSET` 哨兵区分"调用方没传 confidence"与
-  "真的传了 1.0"——引擎返回 `score: 0.88` 不会被静默抹平为 1.0。
-- **`_PydanticBase`**:pydantic 可选;缺失时回退到 stdlib 轻量替代,离线容器可运行。
-- **`RuntimeConfig`**:线程安全,`POST /config` 的运行时覆盖在 `snapshot()` 时与
-  base config 合并,不返回 API key 明文(只暴露 `has_api_key` 布尔)。
-- **rapidocr 1.4.x 适配**:`rapidocr-onnxruntime` 1.4.x 返回 `(results, elapsed)`
-  2-tuple(`results` = `[box, text, score]` 三元组列表),与 1.x 的
-  `(boxes, txts, scores)` 3-tuple、2.x 的 dict 均不同;`_run()` 用
-  `_looks_like_results_list()` 检测并分别解析。
-
-更详细的架构图见 `docs/architecture.mmd` / `docs/architecture.html`,
-用户手册见 `docs/manual.md`。
+架构细节、端到端排查与接口实测记录见 `docs/manual.md`;架构图见
+`docs/architecture.mmd` / `docs/architecture.html`。
 
 ## 许可
 

@@ -192,16 +192,19 @@ cp .env.example .env
 | 智谱 | `https://open.bigmodel.cn/api/paas/v4` |
 | 本地 vLLM | `http://localhost:8000/v1` |
 
-### 3.2 配置文件 `config/config.yaml`
+### 3.2 配置文件
 
 定义引擎顺序、模型、策略:
 
 ```yaml
 strategy:
-  name: fallback             # local | vl | seq* | bestof* | fallback | quality(默认预设)
+  # ⚠️ strategy.name 是**文档字段,不生效** —— build_pipeline 从不读它切换预设,
+  #    预设只能在接口上一次性应用(CLI --strategy-name / HTTP strategy_name /
+  #    /ocr/{preset} 路由)。真正生效的只有下面四个键。
   max_retries: 1
   retry_mode: no_text        # no_text | low_confidence | line_overlap | any | none
   min_confidence: 0.7
+  # bestof_mode: smart       # 单独写这个 → 组装 BestofEngine 而非 StrategyEngine
 
 engines:
   - name: rapidocr           # 本地,离线
@@ -221,6 +224,20 @@ engines:
     enabled: false
     model: qwen-vl-max        # 该平台只认裸模型 ID,不带厂商前缀
 ```
+
+「只用本地 / 只用远程」靠的是条目里的 `enabled: false`,不是 `strategy.name`——
+实测 `name: local` 仍会加载远程引擎,`name: bestof` 仍组装 `StrategyEngine`
+(`tests/test_strategy_presets.py::test_build_pipeline_does_not_reapply_preset`
+锁死了这一行为)。
+
+仓库自带 4 份示例配置,用 `-c` 或 `JYKJ_OCR_CONFIG` 选用:
+
+| 文件 | 内容 |
+|------|------|
+| `config/config.local.yaml` | 示例 1:只本地 rapidocr,零凭据 |
+| `config/config.vl.yaml` | 示例 2:只远程 VL(硅基流动 + 模力方舟) |
+| `config/config.seq.yaml` | 示例 3:本地 + 1 个远程兜底 |
+| `config/config.bestof.yaml` | 示例 4:本地 + 2 个远程,bestof 评分选最佳 |
 
 ### 3.3 配置优先级
 

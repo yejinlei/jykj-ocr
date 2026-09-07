@@ -109,7 +109,7 @@
     <code>siliconflow</code> 等名称保留为别名,写法与 <code>multimodal</code> 完全等价。</p>
 
     <h2>引擎使用策略</h2>
-    <p style="color:var(--muted);font-size:0.92rem;margin-bottom:0.5rem;">配置固定默认策略,单次请求可用 <code>strategy_name</code>(CLI <code>--strategy-name</code> / API 参数 / HTTP 表单或 JSON 字段)一次性覆盖,不改动服务端配置。</p>
+    <p style="color:var(--muted);font-size:0.92rem;margin-bottom:0.5rem;">配置固定默认策略,单次请求可用 <code>strategy_name</code>(CLI <code>--strategy-name</code> / API 参数 / HTTP 表单或 JSON 字段)一次性覆盖,不改动服务端配置。<strong>yaml 里的 <code>strategy.name</code> 不生效</strong>——它只是文档字段,预设只能由接口应用;yaml 中真正生效的只有 <code>bestof_mode</code>(触发 <code>BestofEngine</code>)、<code>max_retries</code>、<code>retry_mode</code>、<code>min_confidence</code>,「只用本地/只用远程」靠条目里的 <code>enabled: false</code>。</p>
 
     <h3 style="font-size:1.05rem;color:var(--text);margin:1.2rem 0 0.5rem;">顺序预设 <code>seq*</code>(走 <code>StrategyEngine</code>,按序尝试,首个命中即返回)</h3>
     <table>
@@ -191,6 +191,8 @@ export OPENAI_BASE_URL=https://api.siliconflow.cn/v1<br/><br/>
 python -m jykj_ocr image.png --engine multimodal --format json<br/><br/>
 <span class="comment"># 一次性命名预设(窜行降级 + 阅读顺序重排)</span><br/>
 python -m jykj_ocr stamp.png --strategy-name quality<br/><br/>
+<span class="comment"># 选用仓库自带的 4 份示例配置(-c 也可用于 serve)</span><br/>
+python -m jykj_ocr serve -c config/config.seq.yaml<br/><br/>
 <span class="comment"># 启动 HTTP 服务</span><br/>
 python -m jykj_ocr serve --port 8000</code>
     </div>

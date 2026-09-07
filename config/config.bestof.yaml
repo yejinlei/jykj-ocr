@@ -1,0 +1,71 @@
+# ============================================================================
+# 示例 4 —— bestof 策略:1 个本地(rapidocr) + 2 个远程(multimodal)
+#
+# 与 seq 的区别:seq 是「第一个成功就停」,bestof 是「三个引擎各跑一次,按评分
+# 挑最好的那个」。适合质量优先、能接受耗时 ×3 的场景。
+#
+# 用法:
+#   jykj-ocr serve -c config/config.bestof.yaml
+#   jykj-ocr -c config/config.bestof.yaml 图片.png
+# ============================================================================
+
+strategy:
+  # ★ bestof_mode 是唯一真正生效的字段 —— build_pipeline 读到它就组装
+  #   BestofEngine 而不是 StrategyEngine。删掉这行,这份配置就退回 seq 语义。
+  #   (yaml 里的 strategy.name 不生效;retry_mode / min_confidence 在 bestof
+  #   分支下也不生效,因为 bestof 没有「重试」概念,每个引擎只跑一次。)
+  bestof_mode: smart   # smart = 置信度 − 窜行惩罚 + 文本长度奖赏 + 语义流畅度
+  # 预设仍可由接口一次性覆盖,不用改文件:
+  #   POST /ocr/bestof            或 POST /ocr/bestof-fluency
+  #   body 带 score_mode=fastest  (等价于改 bestof_mode,且压过上面的值)
+
+output:
+  format: markdown
+
+pdf:
+  max_pages: 50
+  dpi: 200
+
+engines:
+  # 参赛引擎 1:本地 —— 快、离线,但会漏掉版面里的落款行
+  - name: rapidocr
+    lang: ch
+    enabled: true
+    timeout: 30
+
+  # 参赛引擎 2:硅基流动(PaddleOCR-VL-1.5,模型 ID 带厂商前缀)
+  - name: multimodal
+    enabled: true
+    base_url: https://api.siliconflow.cn/v1
+    model: PaddlePaddle/PaddleOCR-VL-1.5
+    api_key:
+    timeout: 180
+    prompt: |
+      请识别图片中的全部文字内容，按原文的版面顺序输出。
+      只输出识别到的文字，不要翻译、不要解释、不要添加任何多余内容。
+      如果是表格，请用 Markdown 表格输出。
+
+  # 参赛引擎 3:模力方舟(Qwen3-VL-30B,裸模型 ID)—— 实测在古文上输出
+  # 简体+标点,还能补出 PaddleOCR 漏掉的行,但响应更慢
+  - name: multimodal
+    enabled: true
+    base_url: https://api.moark.com/v1
+    model: Qwen3-VL-30B-A3B-Instruct
+    api_key:
+    timeout: 180
+    prompt: |
+      请识别图片中的全部文字内容，按原文的版面顺序输出。
+      只输出识别到的文字，不要翻译、不要解释、不要添加任何多余内容。
+      如果是表格，请用 Markdown 表格输出。
+
+  # --- 换评分函数 -------------------------------------------------------
+  # bestof_mode 可取:
+  #   smart        综合(默认)
+  #   fastest      elapsed_ms 最低(通常 rapidocr 赢)
+  #   confidence   平均置信度最高
+  #   longest      识别文本最长
+  #   fluency      语义流畅度(短语密度 + CJK 标点 − 单字碎片惩罚)
+  #
+  # 注意:两个远程条目都留空 api_key 时,它们解析到的是同一把 key。
+  # 那把 key 属于哪个平台,另一个平台就会 401 失败、不参与评分。
+  # 想三引擎齐发,给每条写各自的 api_key(该文件必须先加入 .gitignore)。

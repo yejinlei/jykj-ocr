@@ -1,0 +1,61 @@
+# ============================================================================
+# 示例 2 —— 只使用远程 VL 大模型(multimodal)
+#
+# 与 config.local.yaml 正好相反:本地引擎禁用,只跑远程多模态模型。
+# 需要 .env 或环境变量里有一把可用的 OPENAI_API_KEY。
+#
+# 用法:
+#   jykj-ocr serve -c config/config.vl.yaml
+#   jykj-ocr -c config/config.vl.yaml 图片.png
+#
+# 两个平台顺序:base_url 写进条目,按列表顺序尝试——第 1 条成功就不碰第 2 条。
+# 想要「每个都跑一遍挑最好的」请用 config.bestof.yaml。
+# ============================================================================
+
+strategy:
+  max_retries: 1     # 第 1 个平台无文字/失败时,先重试自己 1 次,再降级到第 2 个
+  retry_mode: no_text
+  min_confidence: 0.7
+
+output:
+  format: markdown
+
+pdf:
+  max_pages: 50
+  dpi: 200
+
+engines:
+  # 本地引擎刻意禁用 —— 这份配置完全不依赖离线推理
+  - name: rapidocr
+    lang: ch
+    enabled: false
+    timeout: 30
+
+  # 第 1 个平台:硅基流动(模型 ID 带厂商前缀)
+  - name: multimodal
+    enabled: true
+    base_url: https://api.siliconflow.cn/v1
+    model: PaddlePaddle/PaddleOCR-VL-1.5
+    api_key:            # 留空 -> JYKJ_OCR_MULTIMODAL_API_KEY / OPENAI_API_KEY
+    timeout: 180
+    prompt: |
+      请识别图片中的全部文字内容，按原文的版面顺序输出。
+      只输出识别到的文字，不要翻译、不要解释、不要添加任何多余内容。
+      如果是表格，请用 Markdown 表格输出。
+
+  # 第 2 个平台:模力方舟(裸模型 ID)—— 第 1 个平台不可用时的兜底
+  - name: multimodal
+    enabled: true
+    base_url: https://api.moark.com/v1
+    model: PaddleOCR-VL-1.5
+    api_key:
+    timeout: 180
+    prompt: |
+      请识别图片中的全部文字内容，按原文的版面顺序输出。
+      只输出识别到的文字，不要翻译、不要解释、不要添加任何多余内容。
+      如果是表格，请用 Markdown 表格输出。
+
+  # --- 注意 -------------------------------------------------------------
+  # api_key 留空时两条共享同一把 key,所以同一时刻只有一个平台真的调得通;
+  # 另一个会以 401 失败并被当作「无文字」继续降级。想让两个平台都在线,
+  # 给每条显式写不同的 api_key(该文件必须先加入 .gitignore)。

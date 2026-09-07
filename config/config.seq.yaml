@@ -1,0 +1,59 @@
+# ============================================================================
+# 示例 3 —— 顺序策略 seq:1 个本地(rapidocr) + 1 个远程(multimodal)
+#
+# 本地优先、远程兜底:rapidocr 先跑(快、离线),只要它认出了文字就直接返回;
+# 只有「无文字」时才降级到远程多模态模型。这是最常用的一组。
+#
+# 用法:
+#   jykj-ocr serve -c config/config.seq.yaml
+#   jykj-ocr -c config/config.seq.yaml 图片.png
+# ============================================================================
+
+strategy:
+  max_retries: 1     # 同一引擎最多重试几次:rapidocr 无文字 -> 重试 1 次 -> 仍无 -> 降级远程
+  retry_mode: no_text
+  min_confidence: 0.7
+
+output:
+  format: markdown
+
+pdf:
+  max_pages: 50
+  dpi: 200
+
+engines:
+  # 第 1 顺位:本地引擎,离线可用,无需 API key
+  - name: rapidocr
+    lang: ch
+    enabled: true
+    timeout: 30
+
+  # 第 2 顺位:远程兜底(模力方舟,裸模型 ID)
+  - name: multimodal
+    enabled: true
+    base_url: https://api.moark.com/v1
+    model: PaddleOCR-VL-1.5
+    api_key:            # 留空 -> JYKJ_OCR_MULTIMODAL_API_KEY / OPENAI_API_KEY
+    timeout: 180
+    prompt: |
+      请识别图片中的全部文字内容，按原文的版面顺序输出。
+      只输出识别到的文字，不要翻译、不要解释、不要添加任何多余内容。
+      如果是表格，请用 Markdown 表格输出。
+
+  # --- 变体 -------------------------------------------------------------
+  # 只有「一个」远程平台时,base_url 也可以留空,改由 OPENAI_BASE_URL 决定平台
+  # (这就是 config/config.yaml 的写法,换平台只改 .env 那一行):
+  #   - name: multimodal
+  #     base_url:            # 留空 -> 读 OPENAI_BASE_URL
+  #     model: PaddleOCR-VL-1.5
+  # 一旦有两个及以上「不同平台」,就必须把 base_url 写进条目——环境变量按类型
+  # 命名,OPENAI_BASE_URL 被所有 multimodal 条目共享,无法区分平台。
+  #
+  # 想让「被判定不达标」的标准更严,改 retry_mode:
+  #   low_confidence  平均置信度 < min_confidence 时降级
+  #   line_overlap    无文字或版面疑似窜行时降级(竖排古文更容易命中)
+  #   any             低置信度或窜行任一命中即降级
+  #   none            首次成功即接受
+  #
+  # 想让被 reject 的引擎立刻降级、不在同一个引擎上重试,把 max_retries 设为 0
+  # (等价于 cascade 预设)。
