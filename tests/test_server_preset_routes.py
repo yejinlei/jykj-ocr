@@ -30,10 +30,22 @@ from jykj_ocr.server import RuntimeConfig, TextRequest
 # Fake engine (no PIL / rapidocr / openai imports)
 # ---------------------------------------------------------------------------
 class _FakeEngine:
-    def __init__(self, name: str, text: str, confidence: float, elapsed_ms: int = 1):
+    """Engine double whose returned text echoes the resolved endpoint.
+
+    ``to_markdown()`` renders only region text, and ``recognise()`` builds the
+    region from ``_text`` — so appending the resolved ``base_url`` / ``api_key``
+    here lets a test assert a per-request override reached the engine. Empty
+    values contribute nothing, so existing assertions on the plain text keep
+    passing.
+    """
+
+    def __init__(self, name: str, text: str, confidence: float, elapsed_ms: int = 1,
+                 base_url: str = "", api_key: str = ""):
         self.name = name
-        self.config = EngineConfig(name=name)
+        self.config = EngineConfig(name=name, base_url=base_url, api_key=api_key)
         self._text = text
+        if base_url or api_key:
+            self._text = f"{text}|{base_url}|{api_key}"
         self._confidence = confidence
         self._elapsed_ms = elapsed_ms
 
@@ -54,7 +66,8 @@ def _apply_inline_overrides(config, body: TextRequest):
     from jykj_ocr.config import normalise_engine
     from jykj_ocr.engine.registry import apply_strategy_preset, remote_engines
 
-    if body.engine or body.model or body.prompt or body.strategy:
+    if body.engine or body.model or body.base_url or body.api_key \
+            or body.prompt or body.strategy:
         engine_dicts = [{
             "name": e.name,
             "enabled": e.enabled,
@@ -77,6 +90,14 @@ def _apply_inline_overrides(config, body: TextRequest):
             for item in engine_dicts:
                 if normalise_engine(item["name"]) in remote_engines():
                     item["model"] = body.model
+        if body.base_url:
+            for item in engine_dicts:
+                if normalise_engine(item["name"]) in remote_engines():
+                    item["base_url"] = body.base_url
+        if body.api_key:
+            for item in engine_dicts:
+                if normalise_engine(item["name"]) in remote_engines():
+                    item["api_key"] = body.api_key
         if body.prompt:
             for item in engine_dicts:
                 if normalise_engine(item["name"]) in remote_engines():
@@ -113,15 +134,21 @@ def _ocr_response(results, fmt: str):
 
 def _build_faked_app(cfg):
     real_build_engine = engine_registry.build_engine
+    # Echo base_url / api_key back out of the engine so a test can see whether
+    # a per-request override reached the engine's config, not just the body.
     rapid = _FakeEngine("rapidocr", "rap", 0.9, elapsed_ms=80)
-    vl = _FakeEngine("multimodal", "multimodal longer text here.", 1.0, elapsed_ms=1200)
 
     def _fake_build_engine(name, config, engine_config=None):
         norm = engine_registry.normalise_engine(name)
         if norm == "rapidocr":
             return rapid
         if norm == "multimodal":
-            return vl
+            ec = engine_config or EngineConfig(name="multimodal")
+            return _FakeEngine(
+                "multimodal", "multimodal longer text here.", 1.0, elapsed_ms=1200,
+                base_url=ec.resolved_base_url,
+                api_key=ec.resolved_api_key,
+            )
         return real_build_engine(norm, config)
 
     engine_registry.build_engine = _fake_build_engine
@@ -133,6 +160,8 @@ def _build_faked_app(cfg):
         preset: str,
         file: UploadFile = File(...),
         model: str = None,
+        base_url: Optional[str] = Form(None),
+        api_key: Optional[str] = Form(None),
         prompt: str = None,
         max_pages: int = None,
         dpi: int = 200,
@@ -153,6 +182,10 @@ def _build_faked_app(cfg):
             raise HTTPException(404, "unknown preset")
         if model:
             body.model = model
+        if base_url:
+            body.base_url = base_url
+        if api_key:
+            body.api_key = api_key
         if prompt:
             body.prompt = prompt
         effective = _apply_inline_overrides(state.snapshot(), body)
@@ -573,6 +606,133 @@ class TestStrategyKnobs:
             assert body[name]["retry_mode"] in (
                 "no_text", "low_confidence", "line_overlap"
             )
+
+
+class TestPerRequestEndpointOverride:
+    """Per-request ``base_url`` / ``api_key`` knobs — the ``/vl`` flexibility.
+
+    Neither falls back silently: an omitted value keeps the entry's own
+    ``base_url`` / ``api_key``, which is where the env-var chain
+    (``OPENAI_BASE_URL_*`` / ``JYKJ_OCR_*_API_KEY`` / ``OPENAI_API_KEY``)
+    kicks in via ``resolved_base_url`` / ``resolved_api_key``. Only
+    ``POST /config`` with ``null`` reverts an explicit value.
+
+    The knobs are applied to *every* remote entry (like ``model`` / ``prompt``),
+    and ``vl`` disables — not deletes — the extra instances, so assertions go
+    through ``apply_strategy_preset(..., "vl")`` and read the surviving entry.
+    """
+
+    def _cfg(self):
+        from jykj_ocr.config import from_mapping
+        return from_mapping({
+            "engines": [
+                {"name": "rapidocr", "enabled": True},
+                {"name": "multimodal", "enabled": True, "model": "PaddleOCR-VL-1.5",
+                 "base_url": "https://api.siliconflow.cn/v1", "api_key": "sk-entry"},
+                {"name": "multimodal", "enabled": False, "model": "doubao-1-5-vision-pro-32k"},
+            ],
+            "strategy": {"max_retries": 0},
+            "output": {},
+            "pdf": {},
+        })
+
+    def _vl_entry(self, body):
+        """The one surviving remote entry after the ``vl`` preset."""
+        from jykj_ocr.engine.registry import apply_strategy_preset
+        from jykj_ocr.server import _apply_inline_overrides
+        effective = _apply_inline_overrides(self._cfg(), body)
+        return apply_strategy_preset(effective, "vl").engines[1]
+
+    def test_api_key_overrides_remote_entry(self):
+        from jykj_ocr.server import TextRequest
+        remote = self._vl_entry(TextRequest(image_url="", api_key="sk-request"))
+        assert remote.api_key == "sk-request"
+        # Endpoint and model are untouched by the key knob.
+        assert remote.base_url == "https://api.siliconflow.cn/v1"
+        assert remote.model == "PaddleOCR-VL-1.5"
+
+    def test_base_url_overrides_remote_entry(self):
+        from jykj_ocr.server import TextRequest
+        remote = self._vl_entry(TextRequest(image_url="", base_url="https://ark.example.com/api/v3"))
+        assert remote.base_url == "https://ark.example.com/api/v3"
+        # The key is untouched, so it still resolves from the entry or env.
+        assert remote.api_key == "sk-entry"
+
+    def test_omitted_credentials_keep_entry_values(self):
+        """A plain ``/vl`` request must not wipe the configured credentials —
+        that is what makes the env-var fallback survive."""
+        from jykj_ocr.server import TextRequest
+        remote = self._vl_entry(TextRequest(image_url="x.png"))
+        assert remote.api_key == "sk-entry"
+        assert remote.base_url == "https://api.siliconflow.cn/v1"
+
+    def test_empty_string_credentials_are_a_noop(self):
+        """An empty Form value (``-F api_key=""``) is falsy and must not clear
+        the entry's key the way ``POST /config`` with ``null`` does."""
+        from jykj_ocr.server import TextRequest
+        remote = self._vl_entry(TextRequest(image_url="x.png", api_key="", base_url=""))
+        assert remote.api_key == "sk-entry"
+        assert remote.base_url == "https://api.siliconflow.cn/v1"
+
+    def test_model_and_credential_combination(self):
+        from jykj_ocr.server import TextRequest
+        remote = self._vl_entry(TextRequest(
+            image_url="x.png",
+            model="Qwen/Qwen3-VL-30B-A3B-Instruct",
+            base_url="https://ark.example.com/api/v3",
+            api_key="sk-second-account",
+        ))
+        assert remote.model == "Qwen/Qwen3-VL-30B-A3B-Instruct"
+        assert remote.base_url == "https://ark.example.com/api/v3"
+        assert remote.api_key == "sk-second-account"
+
+    def test_override_does_not_mutate_base_config(self):
+        """One-shot semantics: the caller's config is never rewritten."""
+        from jykj_ocr.server import _apply_inline_overrides, TextRequest
+        cfg = self._cfg()
+        _apply_inline_overrides(cfg, TextRequest(image_url="x.png", api_key="sk-request"))
+        assert cfg.engines[1].api_key == "sk-entry"
+        assert cfg.engines[2].api_key == ""
+
+    def test_form_field_reaches_the_engine(self, client):
+        """End-to-end: ``-F api_key`` / ``-F base_url`` on ``/ocr/{preset}``
+        lands in the engine's config, not just the request body."""
+        r = client.post(
+            "/ocr/vl",
+            files={"file": ("img.jpg", b"dummy", "image/jpeg")},
+            data={
+                "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+                "base_url": "https://ark.example.com/api/v3",
+                "api_key": "sk-per-request",
+                "format": "json",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert "sk-per-request" in r.json()["pages"][0]["text"]
+        assert "ark.example.com" in r.json()["pages"][0]["text"]
+
+    def test_credential_knob_ignored_on_local_engine_route(self, client):
+        """The knobs only touch remote engines; a local-only route ignores them
+        rather than silently smuggling a key into an offline engine."""
+        r = client.post(
+            "/ocr/local",
+            files={"file": ("img.jpg", b"dummy", "image/jpeg")},
+            data={"api_key": "sk-per-request", "format": "json"},
+        )
+        assert r.status_code == 200, r.text
+        assert "sk-per-request" not in r.json()["pages"][0]["text"]
+
+    def test_credential_knob_via_json_route(self, client):
+        r = client.post(
+            "/ocr/vl/text",
+            json={
+                "image_url": "http://x/y.jpg",
+                "api_key": "sk-per-request",
+                "format": "json",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert "sk-per-request" in r.json()["pages"][0]["text"]
 
 
 class TestTextRequestSourceResolution:

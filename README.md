@@ -184,16 +184,22 @@ python -m jykj_ocr serve          # 或 JYKJ_OCR_PORT=9000 ...
 
 四个 OCR 端点返回结构一致:`{pages, text, engine, page_count}`;`format=text/markdown`
 时退化为纯文本。form / JSON 字段:`file` 或 `image_url`/`image_b64`/`image_data`、
-`engine`、`model`、`prompt`、`strategy`(JSON 字符串)、`strategy_name`、`retry_mode`、
-`score_mode`、`max_retries`、`max_pages`、`dpi`、`format`。`model` / `prompt` 只对
-远程引擎生效。异常映射:`InputError → 400`、`EngineNotAvailable` / `StrategyError → 422`、
-`EngineError → 502`。
+`engine`、`model`、`base_url`、`api_key`、`prompt`、`strategy`(JSON 字符串)、
+`strategy_name`、`retry_mode`、`score_mode`、`max_retries`、`max_pages`、`dpi`、`format`。
+`model` / `base_url` / `api_key` / `prompt` 只对远程引擎生效,且都是**一次性**覆盖——
+`base_url` + `api_key` 留空时仍按原顺序回退环境变量或配置文件里的值,所以 `/vl` 可以在
+单次请求内切到另一个平台或账号,不需要动 `POST /config`。异常映射:`InputError → 400`、
+`EngineNotAvailable` / `StrategyError → 422`、`EngineError → 502`。
 
 ```bash
 curl -s http://localhost:8000/ocr -F "file=@image.png" -F "strategy_name=bestof"
 curl -s http://localhost:8000/ocr/bestof-fluency -F "file=@image.png"
 curl -s http://localhost:8000/ocr/text -H "Content-Type: application/json" \
   -d '{"image_url":"https://example.com/scan.png"}'
+# 单次请求切平台/账号:key 省略时用 export 的环境变量
+curl -s http://localhost:8000/ocr/vl -F "file=@image.png" \
+  -F "model=Qwen/Qwen3-VL-30B-A3B-Instruct" \
+  -F "base_url=https://api.siliconflow.cn/v1"
 curl -s -X POST http://localhost:8000/config -H "Content-Type: application/json" \
   -d '{"engines":[{"name":"multimodal","model":"Qwen3-VL-30B-A3B-Instruct"}]}'
 ```

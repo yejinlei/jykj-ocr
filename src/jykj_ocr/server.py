@@ -213,6 +213,25 @@ class TextRequest(BaseModel):
     format: str = Field("json", description="输出格式:json / text / markdown")
     model: Optional[str] = Field(None, description="覆盖远程引擎的 model 名")
     prompt: Optional[str] = Field(None, description="覆盖远程引擎的 prompt")
+    base_url: Optional[str] = Field(
+        None,
+        description=(
+            "覆盖远程引擎的 base_url(仅本请求生效)。留空或省略时回退到配置条目, "
+            "再回退到 OPENAI_BASE_URL_&lt;N&gt; → OPENAI_BASE_URL → "
+            "JYKJ_OCR_&lt;NAME&gt;_BASE_URL。与 model / api_key 一起改即可在单次"
+            "请求内指向另一个平台。"
+        ),
+    )
+    api_key: Optional[str] = Field(
+        None,
+        description=(
+            "覆盖远程引擎的 api_key(仅本请求生效,不落盘)。留空或省略时按原顺序"
+            "回退:配置条目 → JYKJ_OCR_MULTIMODAL_&lt;N&gt;_API_KEY → "
+            "MULTIMODAL_&lt;N&gt;_API_KEY → JYKJ_OCR_MULTIMODAL_API_KEY → "
+            "MULTIMODAL_API_KEY → OPENAI_API_KEY。与 base_url / model 组合即可在"
+            "单次请求内切到另一个平台或账号。"
+        ),
+    )
     strategy: Optional[Dict[str, Any]] = Field(None, description="临时策略对象(合并进 config.strategy)")
     strategy_name: Optional[str] = Field(
         None, description=f"一次性策略预设:{_PRESET_EXAMPLES}"
@@ -298,12 +317,14 @@ def _engine_raw(engine: EngineConfig) -> Dict[str, Any]:
 
 
 def _apply_inline_overrides(config: Config, body: TextRequest) -> Config:
-    """Apply per-request ``engine``/``model``/``prompt``/``strategy``/``strategy_name``.
+    """Apply per-request ``engine``/``model``/``base_url``/``api_key``/``prompt``/
+    ``strategy``/``strategy_name``.
 
-    This lets a caller pick a different model or a named preset
-    (``local``/``vl``/``seq*``/``bestof*``/``fallback``/``quality``) for a single
-    request without a global ``POST /config``, e.g. ``{"image_url": "...",
-    "strategy_name": "bestof"}``.
+    This lets a caller pick a different model, provider endpoint, account key, or a
+    named preset (``local``/``vl``/``seq*``/``bestof*``/``fallback``/``quality``)
+    for a single request without a global ``POST /config``, e.g.
+    ``{"image_url": "...", "strategy_name": "bestof"}`` or
+    ``{"image_url": "...", "api_key": "sk-..."}``.
 
     Returns a new :class:`Config`; the input is never mutated (one-shot).
     """
@@ -328,6 +349,23 @@ def _apply_inline_overrides(config: Config, body: TextRequest) -> Config:
         for item in engine_dicts:
             if normalise_engine(item["name"]) in remote_engines():
                 item["prompt"] = body.prompt
+        changed = True
+
+    # ``api_key`` / ``base_url`` point a single request at another provider or
+    # account without a global ``POST /config``. A falsy value is left alone so
+    # the entry's own value — or its env-var fallback chain in
+    # ``resolved_api_key`` / ``resolved_base_url`` — keeps working (only
+    # ``null`` on POST /config reverts).
+    if body.api_key:
+        for item in engine_dicts:
+            if normalise_engine(item["name"]) in remote_engines():
+                item["api_key"] = body.api_key
+        changed = True
+
+    if body.base_url:
+        for item in engine_dicts:
+            if normalise_engine(item["name"]) in remote_engines():
+                item["base_url"] = body.base_url
         changed = True
 
     if body.strategy:
@@ -642,6 +680,8 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         file: UploadFile = File(..., description="图片或 PDF"),
         engine: Optional[str] = Form(None),
         model: Optional[str] = Form(None),
+        base_url: Optional[str] = Form(None),
+        api_key: Optional[str] = Form(None),
         prompt: Optional[str] = Form(None),
         strategy: Optional[str] = Form(None),
         strategy_name: Optional[str] = Form(
@@ -674,6 +714,8 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             image_url="",
             engine=engine,
             model=model,
+            base_url=base_url,
+            api_key=api_key,
             prompt=prompt,
             strategy=strategy_map,
             strategy_name=strategy_name,
@@ -704,7 +746,12 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/ocr/text", tags=["OCR 识别"],
           summary="按图片 URL/base64/data URI 识别",
-          description="JSON body:图片三选一 image_url / image_b64 / image_data(必须恰好传一个)。",
+          description=(
+              "JSON body:图片三选一 image_url / image_b64 / image_data(必须恰好传一个)。"
+              "可选覆盖:model / base_url / api_key / prompt / strategy / strategy_name "
+              "及策略旋钮(retry_mode / score_mode / max_retries),均只对本请求生效;"
+              "api_key 与 base_url 省略时用 export 的环境变量或配置文件里的值。"
+          ),
           responses=_ERROR_RESPONSES | {
               200: {"description": "识别成功,统一结构 {pages, text, engine, page_count}"}
           })
@@ -746,6 +793,8 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         preset: str,
         file: UploadFile = File(..., description="图片或 PDF"),
         model: Optional[str] = Form(None),
+        base_url: Optional[str] = Form(None),
+        api_key: Optional[str] = Form(None),
         prompt: Optional[str] = Form(None),
         max_pages: Optional[int] = Form(None),
         dpi: int = Form(200),
@@ -772,8 +821,11 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             POST /ocr/quality          # 窜行降级 + 阅读顺序重排
             POST /ocr/vl               # 仅 1 条远程大模型
 
-        模型 / prompt / 格式 / 策略旋钮等仍可覆盖:
+        模型 / 平台 / 凭据 / prompt / 格式 / 策略旋钮等仍可覆盖:
             POST /ocr/multimodal ... -F "model=qwen-vl-max" -F "format=text"
+            POST /ocr/vl ... -F "model=Qwen/Qwen3-VL-30B-A3B-Instruct" \\
+                             -F "base_url=https://api.siliconflow.cn/v1" \\
+                             -F "api_key=sk-..."     # 都省略时用 export 或配置里的值
             POST /ocr/seq     ... -F "retry_mode=line_overlap"
             POST /ocr/bestof  ... -F "score_mode=fastest"
             POST /ocr/seq     ... -F "max_retries=0"   # 等价于 cascade
@@ -803,6 +855,10 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             )
         if model:
             body.model = model
+        if base_url:
+            body.base_url = base_url
+        if api_key:
+            body.api_key = api_key
         if prompt:
             body.prompt = prompt
         if retry_mode:
@@ -894,6 +950,16 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
                                       "value": {
                                           "image_url": "https://example.com/scan.png",
                                           "retry_mode": "line_overlap",
+                                      },
+                                  },
+                                  "with_model_and_key": {
+                                      "summary": "单次请求切平台/账号(省略 key 时用 export 的值)",
+                                      "value": {
+                                          "image_url": "https://example.com/scan.png",
+                                          "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+                                          "base_url": "https://api.siliconflow.cn/v1",
+                                          "api_key": "sk-your-key-here",
+                                          "prompt": "只输出图片中的文字",
                                       },
                                   },
                               },

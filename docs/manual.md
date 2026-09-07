@@ -640,6 +640,8 @@ JYKJ_OCR_PORT=8000 python -m uvicorn jykj_ocr.server:app --host 0.0.0.0
 | `file` | File | ✅ | 图片或 PDF 文件 |
 | `engine` | string | — | 强制指定引擎(如 `rapidocr`/`multimodal`) |
 | `model` | string | — | 覆盖模型名(仅远程引擎生效) |
+| `base_url` | string | — | 覆盖平台端点(仅远程引擎生效),留空时回退 `OPENAI_BASE_URL_<N>` → `OPENAI_BASE_URL` → `JYKJ_OCR_<NAME>_BASE_URL` |
+| `api_key` | string | — | 覆盖凭据(仅远程引擎生效),留空时回退 `JYKJ_OCR_<NAME>_<N>_API_KEY` → `MULTIMODAL_<N>_API_KEY` → `JYKJ_OCR_MULTIMODAL_API_KEY` → `MULTIMODAL_API_KEY` → `OPENAI_API_KEY` |
 | `prompt` | string | — | 覆盖 prompt(仅远程引擎生效) |
 | `strategy` | JSON string | — | 临时策略对象(如 `{"retry_mode":"any","max_retries":2}`) |
 | `strategy_name` | string | — | 一次性命名预设:`local`/`vl`/`seq*`/`bestof*` |
