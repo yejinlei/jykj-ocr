@@ -88,9 +88,10 @@ class MultimodalEngine(BaseEngine):
         # instead.
         base = config.resolved_base_url
         if not base:
+            named = ", ".join(config.base_url_env_names())
             raise EngineNotAvailable(
-                "no base URL for multimodal engine. Set OPENAI_BASE_URL "
-                "(or base_url in the engine config)."
+                f"no base URL for multimodal engine. Set one of {named}, "
+                "or base_url in the engine config."
             )
         self.base_url = base.rstrip("/")
         self.api_key = config.resolved_api_key
@@ -119,9 +120,10 @@ class MultimodalEngine(BaseEngine):
                 "multimodal engine needs a decoded image; decode the page first"
             )
         if not self.api_key:
+            named = ", ".join(self.config.api_key_env_names())
             raise EngineNotAvailable(
-                f"no API key for '{self.engine_id()}'. Set OPENAI_API_KEY, "
-                "JYKJ_OCR_MULTIMODAL_API_KEY, or api_key in the engine config."
+                f"no API key for '{self.engine_id()}'. Set one of "
+                f"{named}, or api_key in the engine config."
             )
         try:
             import requests  # type: ignore

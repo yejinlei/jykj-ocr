@@ -87,6 +87,7 @@ _ENGINE_FIELDS = {
     "lang",
     "prompt",
     "prompt_file",
+    "instance",
 }
 
 
@@ -118,6 +119,7 @@ class RuntimeConfig:
                         "max_tokens": e.max_tokens,
                         "lang": e.lang,
                         "prompt": e.prompt,
+                        "instance": e.instance,
                         **e.extra,
                     }
                     for e in self._base.engines
@@ -291,6 +293,7 @@ def _engine_raw(engine: EngineConfig) -> Dict[str, Any]:
         "max_tokens": engine.max_tokens,
         "lang": engine.lang,
         "prompt": engine.prompt,
+        "instance": engine.instance,
     }
 
 

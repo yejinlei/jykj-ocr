@@ -1,5 +1,6 @@
 # jykj_ocr 配置示例
-# 真实密钥不要写在这里；用环境变量或 .env（已在 .gitignore 中）。
+# 真实密钥推荐走环境变量(export OPENAI_API_KEY=...)或 Docker -e 注入。
+# 若确实要写进下面的条目，该文件必须先加进 .gitignore —— 否则就是提交密钥。
 
 # 策略链：按顺序尝试，前面的引擎失败/无文字时自动切换到下一个。
 #
@@ -72,12 +73,15 @@ pdf:
 # 每条字段（未列出的键都进 extra，不影响解析）：
 #   name        类型名或 alias（default: multimodal）
 #   enabled     true/false（default: true）
-#   base_url    OpenAI 兼容端点 URL。留空时读 OPENAI_BASE_URL 环境变量，
-#               两者都无则报错（不做平台回退——把 A 平台的 key 发给 B 平台只会
-#               得到一个说不清原因的 HTTP 401）
-#   model       模型 ID。留空时读 JYKJ_OCR_MULTIMODAL_MODEL，再退化为
-#               PaddleOCR-VL-1.5（裸 ID，模力方舟可用；其他平台请显式写全）
-#   api_key     直接写入（多账号场景必须显式区分；单账号用环境变量）
+#   base_url    OpenAI 兼容端点 URL。留空时读 OPENAI_BASE_URL_<N>(<N> = 第 N 条
+#               multimodal),再回退共享的 OPENAI_BASE_URL / JYKJ_OCR_MULTIMODAL_BASE_URL;
+#               全都无则报错(不做平台回退——把 A 平台的 key 发给 B 平台只会
+#               得到一个说不清原因的 HTTP 401)
+#   model       模型 ID。留空时读 JYKJ_OCR_MULTIMODAL_<N>_MODEL,再回退
+#               JYKJ_OCR_MULTIMODAL_MODEL,最后退化为 PaddleOCR-VL-1.5
+#               (裸 ID,模力方舟可用;其他平台请显式写全)
+#   api_key     留空则按序号读 JYKJ_OCR_MULTIMODAL_<N>_API_KEY,再回退共享变量
+#               (单账号直接写也行;该 yaml 需已 gitignore)
 #   temperature 采样温度（default: 0.0）
 #   timeout     单页耗时上限，秒（default: 120）
 #   max_tokens  最大 token 数
@@ -85,10 +89,10 @@ pdf:
 #   prompt_file 从文件读取提示词（等价 prompt 的懒加载）
 #   lang        本地 OCR 语言（仅 rapidocr 使用）
 #
-# 注意：环境变量按「类型」而非「实例」命名。凭据走「通用」一对
-# OPENAI_API_KEY / OPENAI_BASE_URL(适配任意平台,硅基流动只是其中之一);
-# 多条 multimodal entry 共享同一个 key,所以无法只靠环境变量区分账号——
-# 需要多账号时直接写 api_key(该 yaml 需已 gitignore)。
+# 环境变量按「类型 + 序号」命名:序号 1..N 是「同类型里的第 N 条」,各类型独立
+# 计数,数量不限。凭据走「通用」一对 OPENAI_API_KEY / OPENAI_BASE_URL(适配任意
+# 平台,硅基流动只是其中之一),不带序号 = 该类型所有条目共享;带序号 = 每条
+# 各读各的,所以多平台、同厂商多账号都可以只靠环境变量区分,不写进 yaml。
 # ============================================================================
 
 engines:
@@ -103,20 +107,24 @@ engines:
   # ========================================================================
   # 远程引擎 —— 全部走通用 OpenAI 兼容协议
   #
-  # base_url 一律留空，由环境变量的「通用」一对决定平台（见 .env）：
+  # base_url 一律留空，由环境变量的「通用」一对决定平台：
   #   OPENAI_API_KEY=<你的平台 key>
   #   OPENAI_BASE_URL=https://api.moark.com/v1
-  # 换平台只改 .env 那一行，本文件不动。yaml 里只写各条目的差异（model/prompt）。
+  # 换平台只改这两个环境变量的值（本文件不动）。yaml 里只写各条目的差异（model/prompt）。
   # 注意：不同厂商的 model ID 可能不同（moark 用裸 ID，硅基流动要带厂商前缀），
   # 换平台后若报「模型不存在」，按目标平台改一下下面的 model 即可。
+  # 不带序号的变量被同类型所有条目共享；要给每条分不同的端点/模型/key，
+  # 改用 *_1 / *_2 序号变量（见下方「其他平台示例」）。
   # ========================================================================
 
   # 模力方舟 moark：PaddleOCR-VL-1.5（已启用，实测可用）
+  # 第 1 条 multimodal -> base_url 留空时读 OPENAI_BASE_URL_1（再回退 OPENAI_BASE_URL）
+  #   key 读 JYKJ_OCR_MULTIMODAL_1_API_KEY（不设则回退共享的 OPENAI_API_KEY）
   # 注意：moark 用「裸模型 ID」，不带厂商前缀——写 PaddleOCR-VL-1.5，
   # 不是硅基流动的 PaddlePaddle/PaddleOCR-VL-1.5。
   - name: multimodal
     enabled: true
-    base_url:            # 留空 -> 读 OPENAI_BASE_URL
+    base_url:            # 留空 -> OPENAI_BASE_URL_1 / OPENAI_BASE_URL
     model: PaddleOCR-VL-1.5
     timeout: 180
     prompt: |
@@ -125,6 +133,7 @@ engines:
       如果是表格，请用 Markdown 表格输出。
 
   # 同一平台、不同模型（同厂商不同模型组合，已启用）
+  # 第 2 条 multimodal -> 读 JYKJ_OCR_MULTIMODAL_2_API_KEY（默认不设，回退共享 key）
   # 实测 Qwen3-VL-30B 在兰亭序上输出简体+标点，还多认出了 PaddleOCR 漏掉的落款行
   # 输出质量更高，但响应也更慢（~13s vs ~7s）
   - name: multimodal
@@ -138,8 +147,13 @@ engines:
       如果是表格，请用 Markdown 表格输出。
 
   # --- 其他平台示例（按需启用） -------------------------------------------
-  # 同时启用多个「不同平台」：必须把 base_url 写进条目——环境变量按类型命名，
-  # OPENAI_BASE_URL 被所有 multimodal 条目共享，无法区分平台。
+  # 每个条目按书写顺序读自己的一套序号变量，yaml 里可以完全不写：
+  #   端点  OPENAI_BASE_URL_1 / OPENAI_BASE_URL_2 / …
+  #   key   JYKJ_OCR_MULTIMODAL_1_API_KEY / _2_ / …
+  #   model JYKJ_OCR_MULTIMODAL_1_MODEL / _2_ / …
+  # 序号 1..N 是「同类型里的第 N 条」，各类型独立计数，数量不限。
+  # 下面这些条目把 base_url/model 写进 yaml 只是示例（yaml 优先于环境变量）；
+  # 想让环境变量决定，把对应字段留空即可。
 
   # 阿里云百炼
   # - name: multimodal
@@ -172,10 +186,11 @@ engines:
   #   prompt: |
   #     请识别图片中的全部文字内容，按原文的版面顺序输出。
 
-  # 同厂商不同账号：base_url/model 相同，只换 api_key
-  # 环境变量按类型命名，无法区分账号——这里必须显式写 api_key
+  # 同厂商不同账号：base_url/model 相同，换一把 key 即可。两条都用序号变量,
+  # 不写进 yaml:
+  #   export JYKJ_OCR_MULTIMODAL_1_API_KEY=sk-主账号...
+  #   export JYKJ_OCR_MULTIMODAL_2_API_KEY=sk-第二账号...
   # - name: multimodal
   #   enabled: false
   #   base_url: https://api.moark.com/v1
   #   model: PaddleOCR-VL-1.5
-  #   api_key: ${SECOND_ACCOUNT_KEY}   # 提交前替换为真实值，勿入库

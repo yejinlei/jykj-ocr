@@ -155,32 +155,56 @@ python -m jykj_ocr --list-engines
 
 ### 3.1 环境变量(远程引擎)
 
-API key 永远只走环境变量,绝不写入代码或配置文件:
+`base_url` / `model` / `api_key` 三个字段走同一套规则:**yaml 条目里的字段** >
+**带序号的环境变量**(`*_<N>`) > **不带序号的环境变量**(该类型所有条目共享)。
+序号 `<N>` 是「同类型里的第 N 条」,按 yaml 书写顺序编号,数量不限,各类型独立计数
+(rapidocr 不占 multimodal 的号)——所以配置里有几条 `multimodal` 就设几套带序号的
+变量,**yaml 里可以完全不写 URL / 模型 / key**。
 
 ```bash
-cp .env.example .env
-# 编辑 .env:
-#   OPENAI_API_KEY=sk-xxxxxxxx
-#   OPENAI_BASE_URL=https://api.siliconflow.cn/v1
+# 单平台:不带序号的就够,适配任意 OpenAI 兼容端点
+export OPENAI_API_KEY=sk-xxxxxxxx
+export OPENAI_BASE_URL=https://api.siliconflow.cn/v1
+
+# 多平台/多账号:按 yaml 里的顺序给每条各设一套(数量不限)
+export OPENAI_BASE_URL_1=https://api.siliconflow.cn/v1
+export OPENAI_BASE_URL_2=https://api.moark.com/v1
+export JYKJ_OCR_MULTIMODAL_1_API_KEY=***
+export JYKJ_OCR_MULTIMODAL_2_API_KEY=***
+export JYKJ_OCR_MULTIMODAL_1_MODEL=PaddlePaddle/PaddleOCR-VL-1.5
+export JYKJ_OCR_MULTIMODAL_2_MODEL=PaddleOCR-VL-1.5
 ```
+
+`.env` 文件是可选的便利手段(启动时读一次,`_load_dotenv` 找不到就跳过),本仓库
+已不使用——Docker 侧用 `-e` 或 compose 的 `environment:` 注入。
 
 | 变量 | 必需 | 作用 |
 |------|:----:|------|
-| `OPENAI_API_KEY` | 远程引擎必需 | 通用 key,适配任意 OpenAI 兼容平台 |
-| `OPENAI_BASE_URL` | 远程引擎必需 | 端点 URL。**唯一生效的 base URL 变量,被所有 multimodal 条目共享**;不设就报 `EngineNotAvailable`,不会静默回退到某个平台 |
-
-| `JYKJ_OCR_MULTIMODAL_API_KEY` | 可选 | 所有 `multimodal` 条目共享的 key(按类型命名,不按实例) |
+| `OPENAI_BASE_URL_<N>` | 多实例必需 | 第 N 条 `multimodal` 的端点 URL |
+| `JYKJ_OCR_MULTIMODAL_<N>_API_KEY` | 多实例必需 | 第 N 条的 key。简写 `MULTIMODAL_<N>_API_KEY` 同样生效 |
+| `JYKJ_OCR_MULTIMODAL_<N>_MODEL` | 可选 | 第 N 条的模型 ID |
+| `OPENAI_API_KEY` | 远程引擎必需 | 通用 key,适配任意 OpenAI 兼容平台。所有条目共享——**只有单平台时够用** |
+| `OPENAI_BASE_URL` | 远程引擎必需 | 通用端点 URL。所有条目共享,所以多平台必须改用 `OPENAI_BASE_URL_<N>`;解析不出来就报 `EngineNotAvailable`,不会静默回退到某个平台 |
+| `JYKJ_OCR_MULTIMODAL_API_KEY` | 可选 | 所有 `multimodal` 条目共享的 key(按类型命名,不带序号) |
 | `JYKJ_OCR_MULTIMODAL_MODEL` | 可选 | 所有 `multimodal` 条目共享的 model 回退值 |
 | `JYKJ_OCR_CONFIG` | 可选 | 配置文件路径(默认 `config/config.yaml`) |
 | `JYKJ_OCR_PORT` | 可选 | HTTP 服务端口(默认 8000) |
 | `JYKJ_OCR_REMOTE_ENGINES` | 可选 | 逗号分隔,把新引擎追加进远程名单(`vl` 侧),见 §9.2 |
 
-> **⚠️ 多实例的 key 限制**:环境变量按「类型」命名(`JYKJ_OCR_MULTIMODAL_*`),不按实例。
-> 一个 key 会被 config.yaml 里所有 `multimodal` 条目读到,所以「不同厂商 / 不同账号」
-> 的组合无法只靠环境变量实现——`base_url` 与 `model` 只能写进 config.yaml 条目,
-> 需要区分账号时必须在条目里显式写 `api_key`(该 yaml 需已 gitignore)。
-> 症状:某平台返回 HTTP 401「Token is invalid」——A 平台的 key 被送进了 B 平台的条目。
-> 单平台多模型不受影响:共用一个 key,条目里只换 `model`。
+> **多实例:序号是「同类型里的第 N 条」。** 各类型独立编号,rapidocr 不占
+> `multimodal` 的号。`base_url` / `model` / `api_key` 三个字段都用同一套规则,
+> 所以整个条目都可以用环境变量描述,yaml 里只留 `name: multimodal`。
+>
+> 想让某条的变量不随条目增删漂移,在 yaml 里显式钉住:
+>
+> ```yaml
+> - name: multimodal
+>   instance: 1        # 固定读 *_1_*;未钉住的条目自动跳过这个号
+> ```
+>
+> yaml 里写了 `base_url` / `model` / `api_key` 就用 yaml,留空才读环境变量,
+> 两种写法可以混用。写了真实 key 的 yaml 必须先加进 `.gitignore`,否则就是
+> 提交密钥;走序号变量则可以完全不用把密钥写进任何文件。
 
 切换平台示例(改两个变量即可,代码与配置文件不动):
 
@@ -257,16 +281,15 @@ flowchart LR
 
 | 字段 | yaml | 环境变量 | 默认值 |
 |------|------|----------|--------|
-| `base_url` | `base_url:` | `OPENAI_BASE_URL` | **无**——解析不出来即 `EngineNotAvailable` |
-| `model` | `model:` | `JYKJ_OCR_<NAME>_MODEL` | `PaddleOCR-VL-1.5`(裸 ID) |
-| `api_key` | `api_key:` | `JYKJ_OCR_<NAME>_API_KEY` → `<NAME>_API_KEY` → `OPENAI_API_KEY` | 空 |
+| `base_url` | `base_url:` | `OPENAI_BASE_URL_<N>` → `OPENAI_BASE_URL` → `JYKJ_OCR_<NAME>_BASE_URL` | **无**——解析不出来即 `EngineNotAvailable` |
+| `model` | `model:` | `JYKJ_OCR_<NAME>_<N>_MODEL` → `JYKJ_OCR_<NAME>_MODEL` | `PaddleOCR-VL-1.5`(裸 ID) |
+| `api_key` | `api_key:` | `JYKJ_OCR_<NAME>_<N>_API_KEY` → `<NAME>_<N>_API_KEY` → `JYKJ_OCR_<NAME>_API_KEY` → `<NAME>_API_KEY` → `OPENAI_API_KEY` | 空 |
 
-**实务后果**:如果 `config.yaml` 里写了 `base_url: https://a.com/v1`,而 `.env` 里写了
-`OPENAI_BASE_URL=https://b.com/v1`,实际走的是 **a.com**——yaml 赢。想让 `.env` 决定平台,
-把 yaml 里的 `base_url` 留空即可(仓库默认 `config/config.yaml` 就是这么配的)。
+**实务后果**:如果 `config.yaml` 里写了 `base_url: https://a.com/v1`,而环境变量
+`OPENAI_BASE_URL=https://b.com/v1`,实际走的是 **a.com**——yaml 赢。想让环境变量决定
+平台,把 yaml 里的 `base_url` 留空即可(仓库默认 `config/config.yaml` 就是这么配的)。
 
-`.env` 只在进程启动时读取一次(`load_dotenv()`),改完**必须重启服务**才生效——
-已经在跑的进程不会热加载。
+环境变量只在进程启动时读入,改完**必须重启服务**才生效——已经在跑的进程不会热加载。
 
 ---
 
@@ -276,19 +299,20 @@ flowchart LR
 # 构建并启动(含 healthcheck + 模型权重持久化)
 docker compose up --build
 
-# 单容器
+# 单容器（凭据用 -e 直接注入,不需要在仓库里建 .env）
 docker build -t jykj_ocr .
-docker run --rm -p 8000:8000 --env-file .env jykj_ocr
+docker run --rm -p 8000:8000 \
+    -e OPENAI_API_KEY=sk-... -e OPENAI_BASE_URL=https://api.siliconflow.cn/v1 jykj_ocr
 
 # 容器内一次性任务
-docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
+docker run --rm -e OPENAI_API_KEY=sk-... -v "$PWD:/data" jykj_ocr \
     python -m jykj_ocr /data/scan.png --engine multimodal
 ```
 
 ```mermaid
 flowchart TB
     subgraph HOST["宿主机"]
-        ENV[".env<br/>API key 注入"]
+        ENV["OPENAI_API_KEY<br/>OPENAI_BASE_URL<br/>(-e 注入)"]
         VOLUME["rapidocr-models 卷<br/>模型权重持久化"]
         PORT["端口 8000"]
     end
@@ -318,7 +342,7 @@ flowchart TB
 .venv/Scripts/python -m pytest tests -q
 ```
 
-- **CI 基线**:212 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
+- **CI 基线**:237 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
 - 覆盖:models、config(别名归一化、YAML、环境变量优先级、多 multimodal 实例去重)、
   strategy、engines(multimodal OpenAI 响应解析、rapidocr 1.x/1.4.x/2.x 返回形态)、
   策略预设(local/vl/seq*/cascade*/bestof*、deepcopy 不变性、`JYKJ_OCR_REMOTE_ENGINES` 扩展)、
@@ -1524,5 +1548,5 @@ A: 先 `base64.b64encode(img_bytes).decode()` 后拼接为
    `data:image/png;base64,<payload>` 传入,或先写入临时文件再传路径。
 
 **Q: API key 会被泄露吗?**
-A: 不会。`.env` 已 gitignore;`GET /config` 只返回 `has_api_key` 布尔;
-   运行时覆盖 `POST /config` 接受 `api_key` 字段但同样不回显明文。
+A: 不会。key 走环境变量(或 Docker `-e` 注入),不写入任何入库文件;`GET /config`
+   只返回 `has_api_key` 布尔;运行时覆盖 `POST /config` 接受 `api_key` 字段但同样不回显明文。

@@ -42,12 +42,14 @@ engines:
 
   # --- 变体 -------------------------------------------------------------
   # 只有「一个」远程平台时,base_url 也可以留空,改由 OPENAI_BASE_URL 决定平台
-  # (这就是 config/config.yaml 的写法,换平台只改 .env 那一行):
+  # (这就是 config/config.yaml 的写法,换平台只改环境变量的值):
   #   - name: multimodal
-  #     base_url:            # 留空 -> 读 OPENAI_BASE_URL
+  #     base_url:            # 留空 -> 读 OPENAI_BASE_URL(单平台)或 OPENAI_BASE_URL_<N>(多平台)
   #     model: PaddleOCR-VL-1.5
-  # 一旦有两个及以上「不同平台」,就必须把 base_url 写进条目——环境变量按类型
-  # 命名,OPENAI_BASE_URL 被所有 multimodal 条目共享,无法区分平台。
+  # 两个及以上「不同平台」时,每条按书写顺序读自己的一套序号变量:
+  #   第 1 条 -> OPENAI_BASE_URL_1 / JYKJ_OCR_MULTIMODAL_1_API_KEY / _1_MODEL
+  #   第 2 条 -> OPENAI_BASE_URL_2 / JYKJ_OCR_MULTIMODAL_2_API_KEY / _2_MODEL
+  # 数量不限;不写进 yaml 也可以,但写了就用 yaml(yaml 优先)。
   #
   # 想让「被判定不达标」的标准更严,改 retry_mode:
   #   low_confidence  平均置信度 < min_confidence 时降级

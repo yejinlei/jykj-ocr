@@ -4,13 +4,14 @@
 # jykj_ocr 服务镜像
 #
 #   docker build -t jykj_ocr .
-#   docker run --rm -p 8000:8000 --env-file .env jykj_ocr
+#   docker run --rm -p 8000:8000 \
+#       -e OPENAI_API_KEY=sk-... -e OPENAI_BASE_URL=https://api.siliconflow.cn/v1 jykj_ocr
 #
 #   或使用 compose：
 #   docker compose up --build
 #
 # 本地一次性任务（不进容器服务）：
-#   docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
+#   docker run --rm -e OPENAI_API_KEY=sk-... -v "$PWD:/data" jykj_ocr \
 #       python -m jykj_ocr /data/image.png --engine multimodal
 # ---------------------------------------------------------------------------
 FROM python:3.11-slim AS base

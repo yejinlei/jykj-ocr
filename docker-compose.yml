@@ -3,7 +3,8 @@
 #   docker compose up --build                 # 构建并启动服务
 #   docker compose run --rm ocr python -m jykj_ocr /data/x.png   # 一次性任务
 #
-# 密钥来自项目根目录的 .env（已 gitignore）；也可用 --env-file 指定别的文件。
+# 凭据直接注入:取消下面 environment 里的注释并填值。想用外部密钥文件,用
+# `docker compose --env-file <路径> up`(可放在项目外,无需在本仓库建 .env)。
 services:
   ocr:
     build: .
@@ -11,10 +12,10 @@ services:
     container_name: jykj-ocr
     ports:
       - "${JYKJ_OCR_PORT:-8000}:8000"
-    env_file:
-      - .env
     environment:
       JYKJ_OCR_CONFIG: /app/config/config.yaml
+      # OPENAI_API_KEY: sk-your-key-here
+      # OPENAI_BASE_URL: https://api.siliconflow.cn/v1   # 换平台只改这一行
     volumes:
       # 宿主机待处理文件（只读）
       - ./data:/data:ro

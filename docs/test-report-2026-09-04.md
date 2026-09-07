@@ -190,6 +190,11 @@ JYKJ_OCR_SILICONFLOW_MODEL 保留作 A/B 实验与对话式视觉任务用。
 `.env` 加了 `JYKJ_OCR_SILICONFLOW_MODEL=moonshotai/Kimi-K2.7-Code`
 一行方便切换;默认配置仍走 PaddleOCR-VL-1.5。
 
+> **后续变更(2026-09-07)**:上述做法已作废。`JYKJ_OCR_SILICONFLOW_*` 是死变量
+> (`resolved_name` 归一化后恒为 `MULTIMODAL`,只读 `JYKJ_OCR_MULTIMODAL_*`),
+> 现已删除;`.env` 也从仓库移除了。模型 A/B 现在通过 yaml 条目里的 `model` 字段
+> 或 `JYKJ_OCR_MULTIMODAL_MODEL` 环境变量切换。
+
 ---
 
 ## 附:测试脚本

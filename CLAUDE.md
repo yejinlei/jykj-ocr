@@ -10,14 +10,30 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 - **引擎**:
   - `rapidocr` — RapidOCR ONNX(离线),适配 1.4.x `(results, elapsed)`、1.x tuple 与 2.x dict 返回形态。
   - `multimodal` — 通用 OpenAI 兼容 `/chat/completions`,只依赖 `requests`(不引入 `openai` SDK)。**一个类型、无限实例**:config 里可写任意多条 `multimodal`,每条由 `(base_url, model, api_key)` 区分并各自实例化。
+- **每实例环境变量(序号变量)**:`EngineConfig.instance` 是「同类型里的第 N 条」(1-based),
+  由 `from_mapping` 里的 `_assign_instances()` **在 `_dedupe_engines()` 之前**按书写顺序编号,
+  各类型独立计数(rapidocr 不占 multimodal 的号)。三个远程字段都走同一套序号模板
+  (`config.py` 的 `_instance_env_names()`):
+  `base_url` → 条目值 → `OPENAI_BASE_URL_<N>` → `OPENAI_BASE_URL` → `JYKJ_OCR_<NAME>_BASE_URL`;
+  `api_key` → 条目值 → `JYKJ_OCR_<NAME>_<N>_API_KEY` → `<NAME>_<N>_API_KEY`(仅当 instance 已设)→
+  `JYKJ_OCR_<NAME>_API_KEY` → `<NAME>_API_KEY` → `OPENAI_API_KEY`;
+  `model` → 条目值 → `JYKJ_OCR_<NAME>_<N>_MODEL` → `JYKJ_OCR_<NAME>_MODEL`。
+  不带序号的变量被同类型所有条目**共享**——这才是「同平台不同账号」和「多平台」
+  共用一把 key、另一个平台 401 的根因。整条 entry(端点 + 模型 + key)都可以只靠
+  序号环境变量描述,yaml 里一个字段都不用写;同平台不同账号也一样按序号区分。
+  yaml 里可显式写 `instance: 1` 钉住序号(未钉住的条目自动跳过该号),防止条目增删
+  导致 key 漂移。`dedupe_key()` 仍是不含 instance 的 6-tuple——序号相同但 key 不同的
+  两条不会被合并。
 - **引擎别名**:rapid/rapid-ocr/rapidocr-onnx → rapidocr;multi/openai/openai-compat/openai-compatible/llm → multimodal;
   sf/silicon-flow/silicon_flow/siliconflow → multimodal。**只有两个引擎类型**
   (`rapidocr` / `multimodal`)——平台不是引擎,是条目里的 `base_url` + `model`
   组合。
 - **无平台默认值**:三个 `resolved_*` 都不再有任何厂商默认。`base_url` 留空且
-  `OPENAI_BASE_URL` 未设 → `EngineNotAvailable`(不做回退:把 A 平台的 key 发给
-  B 平台只会得到说不清原因的 HTTP 401);`model` 留空退化为裸 ID `PaddleOCR-VL-1.5`,
-  其他平台请显式写全(模力方舟用裸 ID,硅基流动要带厂商前缀)。
+  序号变量与共享的 `OPENAI_BASE_URL` 都没设 → `EngineNotAvailable`(不做回退:把 A 平台的
+  key 发给 B 平台只会得到说不清原因的 HTTP 401);`model` 留空退化为裸 ID
+  `PaddleOCR-VL-1.5`,其他平台请显式写全(模力方舟用裸 ID,硅基流动要带厂商前缀)。
+  两处 `EngineNotAvailable` 的报错文案都列出该条目实际探测过的变量名
+  (`config.base_url_env_names()` / `config.api_key_env_names()`),直接告诉运维该 export 什么。
 - **多实例去重**:`dedupe_key()` = `(resolved_name, resolved_base_url, resolved_model, resolved_api_key, lang, prompt)`,`from_mapping` 解析时折叠完全相同的条目(第一条胜出);同厂商不同模型、不同厂商、同厂商不同账号三种搭配都各自实例化。
 - **Docker**:`python:3.11-slim` 非 root,含 `HEALTHCHECK`,通过 `JYKJ_OCR_CONFIG` / `JYKJ_OCR_PORT` 注入配置。
 
@@ -45,11 +61,10 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 │   ├── config.vl.yaml       # 示例 2:只远程 VL(硅基流动 + 模力方舟)
 │   ├── config.seq.yaml      # 示例 3:local + 1 远程兜底
 │   └── config.bestof.yaml   # 示例 4:local + 2 远程,bestof_mode: smart
-├── tests/                   # pytest,212 个用例(212 passed)
+├── tests/                   # pytest,237 个用例(237 passed)
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / pyproject.toml
-├── .env                     # 存放真实 API key(已 gitignore,勿提交)
-├── .env.example             # 占位符
+├── .env.example             # 占位符模板(真实 key 走 export / Docker -e,本仓库不保留 .env)
 └── .gitignore
 ```
 
@@ -59,7 +74,7 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 # 安装(仅外部依赖;rapidocr_onnxruntime 按需要单独装)
 .venv/Scripts/python -m pip install -r requirements.txt
 
-# 运行测试(目前 212 passed)
+# 运行测试(目前 237 passed)
 .venv/Scripts/python -m pytest tests -q
 
 # CLI 识别(source 是位置参数,没有 ocr 子命令,也没有 -i)
@@ -109,17 +124,20 @@ docker compose up -d
   `any`(低置信度或窜行任一) / `none`。窜行检测在 `models.detect_line_overlap`
   (超长宽比合并框 + 双轴重叠框),重排在 `models.rebuild_text_from_regions`。
 - **配置优先级**:**显式参数 > config.yaml > 环境变量 > 默认值**。
-  `config.py` 的三个 `resolved_*` 都是「yaml 里有值就用 yaml,留空才回退环境变量」:
-  `base_url` 走 yaml → `OPENAI_BASE_URL`;
-  `model` 走 yaml → `JYKJ_OCR_<NAME>_MODEL`;
-  `api_key` 走 yaml → `JYKJ_OCR_<NAME>_API_KEY` → `<NAME>_API_KEY` → `OPENAI_API_KEY`。
+  `config.py` 的三个 `resolved_*` 都是「yaml 里有值就用 yaml,留空才回退环境变量」,
+  且都优先序号变量、再落共享变量:
+  `base_url` 走 yaml → `OPENAI_BASE_URL_<N>` → `OPENAI_BASE_URL` → `JYKJ_OCR_<NAME>_BASE_URL`;
+  `model` 走 yaml → `JYKJ_OCR_<NAME>_<N>_MODEL` → `JYKJ_OCR_<NAME>_MODEL`;
+  `api_key` 走 yaml → `JYKJ_OCR_<NAME>_<N>_API_KEY` / `<NAME>_<N>_API_KEY`(仅当
+  instance 已设)→ `JYKJ_OCR_<NAME>_API_KEY` → `<NAME>_API_KEY` → `OPENAI_API_KEY`
+  (见「每实例环境变量」;`<N>` 是 `EngineConfig.instance`,由 `_assign_instances` 编号)。
   **环境变量不会覆盖 yaml 里已写的值**——`config.yaml` 一旦写了 `base_url`,
-  `.env` 的 `OPENAI_BASE_URL` 就被忽略。想让环境变量接管平台,把 yaml 里的
+  `OPENAI_BASE_URL` 就被忽略。想让环境变量接管平台,把 yaml 里的
   `base_url` 留空(当前 `config/config.yaml` 就是这么配的)。
   远程引擎统一走 OpenAI 兼容协议:设一对 `OPENAI_API_KEY`/`OPENAI_BASE_URL` 即可指向任意平台。
   **没有厂商默认值**——base URL 解析不出来就 `EngineNotAvailable`(fail-fast);
   静默回退到某个平台会把 A 平台的 key 发给 B,只会表现为一个说不清原因的 HTTP 401。
-  **`.env` 只在进程启动时读一次**(`load_dotenv()`),改 `.env` 必须重启服务才生效。
+  环境变量只在进程启动时读入,改完必须重启服务才生效。
 
 ## 架构要点
 
@@ -184,6 +202,6 @@ docker compose up -d
 3. 不要往 repo 提交真实 API key;`.env` 已 gitignore,新环境用 `.env.example` 起手。
 4. 加新引擎:实现 `BaseEngine` 子类 + `_recognise_impl` + `_wrap`,用 `@register("name")` 装饰工厂函数;
    若要保留惰性 import,在 `engine/__init__.py` 里 `register_lazy` 即可。
-5. 改 API 契约前跑一遍 `pytest tests -q`;当前 212 passed 是基线。
+5. 改 API 契约前跑一遍 `pytest tests -q`;当前 237 passed 是基线。
 6. `engines_from_config` 不带显式 names 时只用 **enabled** 引擎(尊重 `enabled: false`);
    加新引擎后跑一遍预设测试确认 `local`/`vl` 归类正确(远程名单外的都进 local)。

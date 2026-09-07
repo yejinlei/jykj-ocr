@@ -259,8 +259,11 @@ OCRResult(text, regions, engine, model, elapsed_ms)
       <table>
         <thead><tr><th>变量</th><th>用途</th></tr></thead>
         <tbody>
-          <tr><td><code>OPENAI_API_KEY</code></td><td>通用 key,任意 OpenAI 兼容平台</td></tr>
-          <tr><td><code>OPENAI_BASE_URL</code></td><td>端点 URL(切换平台只改此两变量)</td></tr>
+          <tr><td><code>OPENAI_API_KEY</code></td><td>通用 key,任意 OpenAI 兼容平台(所有 multimodal 条目共享)</td></tr>
+          <tr><td><code>OPENAI_BASE_URL</code></td><td>共享端点 URL(不带序号,单平台够用)</td></tr>
+          <tr><td><code>OPENAI_BASE_URL_&lt;N&gt;</code></td><td>第 N 条 multimodal 的端点,按 yaml 书写顺序编号,数量不限</td></tr>
+          <tr><td><code>JYKJ_OCR_MULTIMODAL_&lt;N&gt;_API_KEY</code></td><td>第 N 条的独立 key(简写 <code>MULTIMODAL_&lt;N&gt;_API_KEY</code> 同样生效)</td></tr>
+          <tr><td><code>JYKJ_OCR_MULTIMODAL_&lt;N&gt;_MODEL</code></td><td>第 N 条的模型 ID</td></tr>
           <tr><td><code>JYKJ_OCR_CONFIG</code></td><td>配置文件路径</td></tr>
           <tr><td><code>JYKJ_OCR_PORT</code></td><td>HTTP 服务端口</td></tr>
         </tbody>
@@ -271,17 +274,18 @@ OCRResult(text, regions, engine, model, elapsed_ms)
       <pre><code>1. 显式参数
      --engine / ocr(engine=...)
 2. config/config.yaml
-3. 环境变量
-     JYKJ_OCR_*
-     JYKJ_OCR_&lt;NAME&gt;_API_KEY
-     &lt;NAME&gt;_API_KEY
-     OPENAI_API_KEY / OPENAI_BASE_URL
-4. 内置默认值</code></pre>
+3. 环境变量(每个字段:先序号变量,再共享变量)
+     OPENAI_BASE_URL_&lt;N&gt;  →  OPENAI_BASE_URL
+     JYKJ_OCR_&lt;NAME&gt;_&lt;N&gt;_MODEL  →  JYKJ_OCR_&lt;NAME&gt;_MODEL
+     JYKJ_OCR_&lt;NAME&gt;_&lt;N&gt;_API_KEY / &lt;NAME&gt;_&lt;N&gt;_API_KEY
+     JYKJ_OCR_&lt;NAME&gt;_API_KEY / &lt;NAME&gt;_API_KEY  (按类型共享)
+     OPENAI_API_KEY
+4. 内置默认值(仅 model → PaddleOCR-VL-1.5)</code></pre>
       <p style="font-size:0.85rem;color:var(--muted);margin-top:0.6rem;">
         方向与直觉相反,但这是代码实现:三个 <code>resolved_*</code> 都是「yaml 有值就用
         yaml,留空才回退环境变量」。想让 <code>OPENAI_BASE_URL</code> 决定平台,把
         <code>config.yaml</code> 里的 <code>base_url</code> 留空。
-        <code>.env</code> 只在进程启动时读一次,改完需重启服务。</p>
+        环境变量只在进程启动时读入,改完需重启服务。</p>
     </div>
   </div>
 

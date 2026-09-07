@@ -2,7 +2,9 @@
 # 示例 2 —— 只使用远程 VL 大模型(multimodal)
 #
 # 与 config.local.yaml 正好相反:本地引擎禁用,只跑远程多模态模型。
-# 需要 .env 或环境变量里有一把可用的 OPENAI_API_KEY。
+# 每个平台各读一把 key(见下方「两个平台各用一把 key」):
+#   export JYKJ_OCR_MULTIMODAL_1_API_KEY=sk-sf...
+#   export JYKJ_OCR_MULTIMODAL_2_API_KEY=sk-moark...
 #
 # 用法:
 #   jykj-ocr serve -c config/config.vl.yaml
@@ -32,11 +34,12 @@ engines:
     timeout: 30
 
   # 第 1 个平台:硅基流动(模型 ID 带厂商前缀)
+  # 读 JYKJ_OCR_MULTIMODAL_1_API_KEY(第 1 条 multimodal),否则回退共享的 OPENAI_API_KEY
   - name: multimodal
     enabled: true
     base_url: https://api.siliconflow.cn/v1
     model: PaddlePaddle/PaddleOCR-VL-1.5
-    api_key:            # 留空 -> JYKJ_OCR_MULTIMODAL_API_KEY / OPENAI_API_KEY
+    api_key:            # 留空 -> JYKJ_OCR_MULTIMODAL_1_API_KEY / OPENAI_API_KEY
     timeout: 180
     prompt: |
       请识别图片中的全部文字内容，按原文的版面顺序输出。
@@ -44,6 +47,7 @@ engines:
       如果是表格，请用 Markdown 表格输出。
 
   # 第 2 个平台:模力方舟(裸模型 ID)—— 第 1 个平台不可用时的兜底
+  # 读 JYKJ_OCR_MULTIMODAL_2_API_KEY(第 2 条 multimodal)
   - name: multimodal
     enabled: true
     base_url: https://api.moark.com/v1
@@ -55,7 +59,17 @@ engines:
       只输出识别到的文字，不要翻译、不要解释、不要添加任何多余内容。
       如果是表格，请用 Markdown 表格输出。
 
-  # --- 注意 -------------------------------------------------------------
-  # api_key 留空时两条共享同一把 key,所以同一时刻只有一个平台真的调得通;
-  # 另一个会以 401 失败并被当作「无文字」继续降级。想让两个平台都在线,
-  # 给每条显式写不同的 api_key(该文件必须先加入 .gitignore)。
+  # --- 两个平台各一套序号变量 ----------------------------------------------
+  # 每条 multimodal 按 yaml 里的顺序读自己的一整套,数量不限:
+  #   第 1 条 -> OPENAI_BASE_URL_1 / JYKJ_OCR_MULTIMODAL_1_API_KEY / _1_MODEL
+  #   第 2 条 -> OPENAI_BASE_URL_2 / JYKJ_OCR_MULTIMODAL_2_API_KEY / _2_MODEL
+  # 上面条目里写了 base_url/model 只是示例(写了就用 yaml,yaml 优先于环境变量);
+  # 想让环境变量决定平台,把对应字段留空即可。
+  # 全部不设时两条解析到同一把 OPENAI_API_KEY + 同一个 OPENAI_BASE_URL —— 那把
+  # key 属于哪个平台,另一个平台就会 401 失败并被当作「无文字」继续降级。两个
+  # 平台同时在线:
+  #   export OPENAI_BASE_URL_1=https://api.siliconflow.cn/v1
+  #   export OPENAI_BASE_URL_2=https://api.moark.com/v1
+  #   export JYKJ_OCR_MULTIMODAL_1_API_KEY=sk-sf...     # 硅基流动
+  #   export JYKJ_OCR_MULTIMODAL_2_API_KEY=sk-moark...  # 模力方舟
+  # 想让序号不随条目增删漂移,在条目里钉住:instance: 1

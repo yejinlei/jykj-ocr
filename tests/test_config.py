@@ -20,8 +20,10 @@ _KEY_ENVS = (
     "OPENAI_API_KEY",
     "MULTIMODAL_API_KEY",
     "JYKJ_OCR_MULTIMODAL_API_KEY",
-    "MULTIMODAL_API_KEY",
-    "JYKJ_OCR_MULTIMODAL_API_KEY",
+) + tuple(
+    f"{name}_{n}_API_KEY"
+    for n in (1, 2, 3)
+    for name in ("JYKJ_OCR_MULTIMODAL", "MULTIMODAL")
 )
 
 
@@ -101,8 +103,9 @@ class TestEngineConfig:
         assert EngineConfig(api_key="explicit").resolved_api_key == "explicit"
 
     def test_resolved_api_key_env_precedence(self, monkeypatch):
-        """Same type, two accounts: the type-scoped var serves all instances,
-        so distinct accounts need an explicit api_key on the entry."""
+        """The type-scoped var serves every instance of the type, so distinct
+        accounts need an explicit ``api_key`` on the entry — or the numbered
+        per-instance variables (see TestInstanceScopedKeys)."""
         monkeypatch.setenv("OPENAI_API_KEY", "generic")
         monkeypatch.setenv("MULTIMODAL_API_KEY", "specific")
         assert EngineConfig(name="multimodal").resolved_api_key == "specific"
@@ -245,6 +248,18 @@ class TestMultipleMultimodalInstances:
         with pytest.raises(EngineNotAvailable, match="base URL"):
             MultimodalEngine(EngineConfig(name="multimodal", api_key="k"))
 
+    def test_no_key_error_names_the_numbered_vars(self, monkeypatch):
+        """The operator must be told which per-instance variable to set, not
+        pointed at a single shared name that every entry already reads."""
+        from jykj_ocr.engine.base import EngineNotAvailable, PageImage
+        from PIL import Image
+
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://x.test")
+        engine = MultimodalEngine(EngineConfig(name="multimodal", instance=2))
+        page = PageImage(pil_image=Image.new("RGB", (10, 10)))
+        with pytest.raises(EngineNotAvailable, match="JYKJ_OCR_MULTIMODAL_2_API_KEY"):
+            engine.recognise(page)
+
     def test_alias_entry_reads_openai_env(self, monkeypatch):
         """A config entry still written as ``siliconflow`` (legacy) resolves
         exactly like any other multimodal entry: explicit config ->
@@ -268,6 +283,259 @@ class TestMultipleMultimodalInstances:
         # Last-resort model is the bare OCR-VL-1.5 ID; a configured platform
         # should always supply its own (vendor-prefixed or bare) model ID.
         assert engine.model_name == "PaddleOCR-VL-1.5"
+
+
+class TestInstanceScopedKeys:
+    """``multimodal`` is a type with unlimited instances, so the bare, type-scoped
+    key variables cannot serve two entries at two different providers. The
+    numbered per-instance variables do, without putting secrets in the yaml."""
+
+    def test_instances_are_numbered_in_declared_order(self):
+        cfg = from_mapping({
+            "engines": [
+                {"name": "rapidocr"},
+                {"name": "multimodal", "model": "m1"},
+                {"name": "multimodal", "model": "m2"},
+                {"name": "multimodal", "model": "m3"},
+            ],
+        })
+        assert [e.instance for e in cfg.engines] == [1, 1, 2, 3]
+
+    def test_numbering_is_per_type(self):
+        """rapidocr instances never consume multimodal numbers."""
+        cfg = from_mapping({
+            "engines": [
+                {"name": "rapidocr", "lang": "ch"},
+                {"name": "multimodal", "model": "m1"},
+                {"name": "rapidocr", "lang": "en"},
+                {"name": "multimodal", "model": "m2"},
+            ],
+        })
+        assert [e.instance for e in cfg.engines] == [1, 1, 2, 2]
+
+    def test_api_key_env_names_include_instance_scoped_first(self):
+        cfg = EngineConfig(name="multimodal", instance=2)
+        assert cfg.api_key_env_names() == [
+            "JYKJ_OCR_MULTIMODAL_2_API_KEY",
+            "MULTIMODAL_2_API_KEY",
+            "JYKJ_OCR_MULTIMODAL_API_KEY",
+            "MULTIMODAL_API_KEY",
+            "OPENAI_API_KEY",
+        ]
+
+    def test_api_key_env_names_without_instance_are_shared(self):
+        """A hand-built config (``instance`` unset) keeps the legacy 3 names."""
+        assert EngineConfig(name="multimodal").api_key_env_names() == [
+            "JYKJ_OCR_MULTIMODAL_API_KEY",
+            "MULTIMODAL_API_KEY",
+            "OPENAI_API_KEY",
+        ]
+
+    def test_entry_reads_its_own_numbered_key(self, monkeypatch):
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_1_API_KEY", "key-1")
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_2_API_KEY", "key-2")
+        cfg = from_mapping({
+            "engines": [
+                {"name": "multimodal", "model": "m1"},
+                {"name": "multimodal", "model": "m2"},
+            ]
+        })
+        assert [e.resolved_api_key for e in cfg.engines] == ["key-1", "key-2"]
+
+    def test_instance_scoped_beats_shared_name(self, monkeypatch):
+        """The whole point: two entries, two providers, one key each."""
+        monkeypatch.setenv("OPENAI_API_KEY", "shared")
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_1_API_KEY", "key-1")
+        cfg = from_mapping({
+            "engines": [
+                {"name": "multimodal", "model": "m1"},
+                {"name": "multimodal", "model": "m2"},
+            ]
+        })
+        assert cfg.engines[0].resolved_api_key == "key-1"
+        # Entry 2 has no numbered var, so it falls back to the shared one.
+        assert cfg.engines[1].resolved_api_key == "shared"
+
+    def test_explicit_api_key_beats_numbered_env(self, monkeypatch):
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_1_API_KEY", "key-1")
+        cfg = from_mapping({
+            "engines": [{"name": "multimodal", "api_key": "inline"}]
+        })
+        assert cfg.engines[0].resolved_api_key == "inline"
+
+    def test_empty_numbered_value_is_skipped(self, monkeypatch):
+        """An empty placeholder cannot masquerade as a real key."""
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_1_API_KEY", "")
+        monkeypatch.setenv("OPENAI_API_KEY", "shared")
+        cfg = from_mapping({"engines": [{"name": "multimodal", "model": "m1"}]})
+        assert cfg.engines[0].resolved_api_key == "shared"
+
+    def test_instance_is_a_yaml_field(self):
+        """``instance`` must survive the from_mapping round trip."""
+        cfg = from_mapping({
+            "engines": [{"name": "multimodal", "instance": 2, "model": "m"}]
+        })
+        assert cfg.engines[0].instance == 2
+
+    def test_pinned_instance_is_honored_and_skipped(self):
+        """Pinning keeps an entry's key variable stable across reorderings."""
+        cfg = from_mapping({
+            "engines": [
+                {"name": "multimodal", "model": "pinned", "instance": 1},
+                {"name": "multimodal", "model": "other"},
+                {"name": "multimodal", "model": "third"},
+            ]
+        })
+        assert [e.instance for e in cfg.engines] == [1, 2, 3]
+
+    def test_indices_survive_dedupe(self):
+        """Dedupe runs after numbering, so the survivor keeps the index it
+        was declared with — gaps stay where duplicates were removed."""
+        cfg = from_mapping({
+            "engines": [
+                {"name": "multimodal", "model": "m"},
+                {"name": "multimodal", "model": "m"},
+                {"name": "multimodal", "model": "n"},
+            ]
+        })
+        assert [e.instance for e in cfg.engines] == [1, 3]
+        assert [e.model for e in cfg.engines] == ["m", "n"]
+
+    def test_dedupe_ignores_instance(self):
+        """The index is a config address, not part of the network call — the
+        dedupe tuple stays 6 fields regardless of how many instances exist."""
+        a = EngineConfig(name="multimodal", model="m", instance=1)
+        b = EngineConfig(name="multimodal", model="m", instance=2)
+        assert a.dedupe_key() == b.dedupe_key()
+        assert len(a.dedupe_key()) == 6
+
+    def test_engine_config_carries_instance(self, monkeypatch):
+        """The effective Config handed to the engines keeps its index, so each
+        entry reads its own numbered key."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://x.test")
+        cfg = from_mapping({
+            "engines": [
+                {"name": "multimodal", "model": "m1"},
+                {"name": "multimodal", "model": "m2"},
+            ]
+        })
+        assert [e.instance for e in cfg.engines] == [1, 2]
+
+    def test_snapshot_exposes_instance(self, monkeypatch):
+        """``RuntimeConfig.snapshot()`` round-trips the index, so ``GET /config``
+        can show which numbered variable each entry reads."""
+        from jykj_ocr.server import RuntimeConfig
+
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://x.test")
+        runtime = RuntimeConfig(from_mapping({
+            "engines": [
+                {"name": "multimodal", "model": "m1"},
+                {"name": "multimodal", "model": "m2"},
+            ]
+        }))
+        assert [e.instance for e in runtime.snapshot().engines] == [1, 2]
+
+
+class TestInstanceScopedBaseUrlAndModel:
+    """The same numbered scheme extends to ``base_url`` and ``model``, so a
+    whole entry can be assembled from env vars with zero secrets in the yaml."""
+
+    def test_base_url_env_names_numbered_first(self):
+        assert EngineConfig(name="multimodal", instance=2).base_url_env_names() == [
+            "OPENAI_BASE_URL_2",
+            "OPENAI_BASE_URL",
+            "JYKJ_OCR_MULTIMODAL_BASE_URL",
+        ]
+
+    def test_base_url_env_names_without_instance(self):
+        assert EngineConfig(name="multimodal").base_url_env_names() == [
+            "OPENAI_BASE_URL",
+            "JYKJ_OCR_MULTIMODAL_BASE_URL",
+        ]
+
+    def test_model_env_names(self):
+        assert EngineConfig(name="multimodal", instance=2).model_env_names() == [
+            "JYKJ_OCR_MULTIMODAL_2_MODEL",
+            "JYKJ_OCR_MULTIMODAL_MODEL",
+        ]
+        assert EngineConfig(name="multimodal").model_env_names() == [
+            "JYKJ_OCR_MULTIMODAL_MODEL",
+        ]
+
+    def test_each_entry_reads_its_own_base_url(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_BASE_URL_1", "https://api.siliconflow.cn/v1/")
+        monkeypatch.setenv("OPENAI_BASE_URL_2", "https://api.moark.com/v1")
+        cfg = from_mapping({
+            "engines": [
+                {"name": "multimodal"},
+                {"name": "multimodal"},
+            ]
+        })
+        assert [e.resolved_base_url for e in cfg.engines] == [
+            "https://api.siliconflow.cn/v1",
+            "https://api.moark.com/v1",
+        ]
+
+    def test_numbered_base_url_beats_shared(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://shared.test")
+        monkeypatch.setenv("OPENAI_BASE_URL_1", "https://numbered.test")
+        cfg = from_mapping({"engines": [{"name": "multimodal"}]})
+        assert cfg.engines[0].resolved_base_url == "https://numbered.test"
+
+    def test_explicit_base_url_beats_env(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_BASE_URL_1", "https://numbered.test")
+        cfg = from_mapping({
+            "engines": [{"name": "multimodal", "base_url": "https://explicit.test"}]
+        })
+        assert cfg.engines[0].resolved_base_url == "https://explicit.test"
+
+    def test_each_entry_reads_its_own_model(self, monkeypatch):
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_1_MODEL", "model-1")
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_2_MODEL", "model-2")
+        cfg = from_mapping({"engines": [{"name": "multimodal"}, {"name": "multimodal"}]})
+        assert [e.resolved_model for e in cfg.engines] == ["model-1", "model-2"]
+
+    def test_numbered_model_beats_shared_model(self, monkeypatch):
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_MODEL", "shared")
+        monkeypatch.setenv("JYKJ_OCR_MULTIMODAL_1_MODEL", "numbered")
+        cfg = from_mapping({"engines": [{"name": "multimodal"}]})
+        assert cfg.engines[0].resolved_model == "numbered"
+
+    def test_full_entry_from_env_vars_only(self, monkeypatch):
+        """Three entries, no yaml fields at all beyond ``name``."""
+        for n, (url, key, model) in enumerate(
+            [
+                ("https://api.siliconflow.cn/v1", "key-1", "PaddlePaddle/PaddleOCR-VL-1.5"),
+                ("https://api.moark.com/v1", "key-2", "PaddleOCR-VL-1.5"),
+                ("https://dashscope.aliyuncs.com/compatible-mode/v1", "key-3", "qwen-vl-max"),
+            ],
+            start=1,
+        ):
+            monkeypatch.setenv(f"OPENAI_BASE_URL_{n}", url)
+            monkeypatch.setenv(f"JYKJ_OCR_MULTIMODAL_{n}_API_KEY", key)
+            monkeypatch.setenv(f"JYKJ_OCR_MULTIMODAL_{n}_MODEL", model)
+        cfg = from_mapping({"engines": [{"name": "multimodal"}] * 3})
+        assert [e.instance for e in cfg.engines] == [1, 2, 3]
+        assert [e.resolved_base_url for e in cfg.engines] == [
+            "https://api.siliconflow.cn/v1",
+            "https://api.moark.com/v1",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        ]
+        assert [e.resolved_api_key for e in cfg.engines] == ["key-1", "key-2", "key-3"]
+        assert [e.resolved_model for e in cfg.engines] == [
+            "PaddlePaddle/PaddleOCR-VL-1.5",
+            "PaddleOCR-VL-1.5",
+            "qwen-vl-max",
+        ]
+
+    def test_missing_base_url_error_names_numbered_vars(self, monkeypatch):
+        """An unnamed endpoint must fail fast and say which variable to set."""
+        from jykj_ocr.engine.base import EngineNotAvailable
+
+        for v in ("OPENAI_BASE_URL", "OPENAI_BASE_URL_2", "JYKJ_OCR_MULTIMODAL_BASE_URL"):
+            monkeypatch.delenv(v, raising=False)
+        with pytest.raises(EngineNotAvailable, match="OPENAI_BASE_URL_2"):
+            MultimodalEngine(EngineConfig(name="multimodal", instance=2))
 
 
 class TestFromMapping:

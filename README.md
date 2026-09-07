@@ -90,16 +90,30 @@ GUI 版,先 `pip uninstall -y opencv-python` 再装 headless,或用
 | `config/config.seq.yaml` | 示例 3:本地 + 1 个远程兜底 |
 | `config/config.bestof.yaml` | 示例 4:本地 + 2 个远程,bestof 评分选最佳 |
 
-**API key 两种来源**:`export OPENAI_API_KEY=sk-...`(推荐)或写进 yaml 条目的
-`api_key` 字段。只有「同时启用多个不同平台」时才必须写进 yaml——环境变量按「类型」
-命名,`OPENAI_BASE_URL` 被所有 `multimodal` 条目共享,无法区分平台。
+**环境变量按序号,每条各读各的** —— 这是多平台的唯一方式。配置里有 N 条
+`multimodal`,就按 yaml 书写顺序读 `*_1`、`*_2`……数量不限,**yaml 里可以完全不写
+URL / 模型 / key**:
 
 | 变量 | 用途 |
 |------|------|
-| `OPENAI_API_KEY` | 通用 key,适配任意 OpenAI 兼容平台 |
-| `OPENAI_BASE_URL` | 端点 URL(换平台只改这一行) |
-| `JYKJ_OCR_<NAME>_API_KEY` | 按类型命名的专用 key,优先于 `OPENAI_API_KEY` |
+| `OPENAI_BASE_URL_<N>` | 第 N 条 `multimodal` 的端点 |
+| `JYKJ_OCR_MULTIMODAL_<N>_API_KEY` | 第 N 条的 key,N 不限(简写 `MULTIMODAL_<N>_API_KEY` 同样生效) |
+| `JYKJ_OCR_MULTIMODAL_<N>_MODEL` | 第 N 条的模型 |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `JYKJ_OCR_MULTIMODAL_MODEL` | 不带序号的回退,该类型**所有条目共享**——只有单平台才够用 |
 | `JYKJ_OCR_CONFIG` / `JYKJ_OCR_PORT` | 配置文件路径 / 服务端口 |
+
+```bash
+export OPENAI_BASE_URL_1=https://api.siliconflow.cn/v1     # 第 1 条
+export OPENAI_BASE_URL_2=https://api.moark.com/v1          # 第 2 条
+export JYKJ_OCR_MULTIMODAL_1_API_KEY=***
+export JYKJ_OCR_MULTIMODAL_2_API_KEY=***
+export JYKJ_OCR_MULTIMODAL_1_MODEL=PaddlePaddle/PaddleOCR-VL-1.5
+export JYKJ_OCR_MULTIMODAL_2_MODEL=PaddleOCR-VL-1.5
+```
+
+yaml 字段优先级最高:条目里写了 `base_url` / `model` / `api_key` 就用条目,留空才读
+环境变量,两种写法可以混用。想让某条的序号不随条目增删漂移,在 yaml 里钉住
+`instance: 1`(未钉住的条目自动跳过该号)。
 
 **优先级**(高 → 低):单次请求参数(`--strategy-name`、`strategy_name`、`/ocr/{preset}`
 路由) > `POST /config` 运行时覆盖 > yaml 字段 > 环境变量 > 内置默认值。
@@ -110,7 +124,7 @@ GUI 版,先 `pip uninstall -y opencv-python` 再装 headless,或用
 
 **yaml 里的 `strategy.name` 不生效**,它只是文档字段——预设交给接口。真正生效的只有
 `bestof_mode`(单独触发 `BestofEngine`)、`max_retries`、`retry_mode`、`min_confidence`;
-「只用本地 / 只用远程」靠条目里的 `enabled: false`。`.env` 只在进程启动时读一次,
+「只用本地 / 只用远程」靠条目里的 `enabled: false`。环境变量只在进程启动时读入,
 改完必须重启。
 
 ## CLI
@@ -188,11 +202,12 @@ curl -s -X POST http://localhost:8000/config -H "Content-Type: application/json"
 
 ```bash
 docker build -t jykj_ocr .
-docker run --rm -p 8000:8000 --env-file .env jykj_ocr
+docker run --rm -p 8000:8000 \
+    -e OPENAI_API_KEY=sk-... -e OPENAI_BASE_URL=https://api.siliconflow.cn/v1 jykj_ocr
 
 docker compose up --build                      # 含 healthcheck、权重持久化卷
 
-docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
+docker run --rm -e OPENAI_API_KEY=sk-... -v "$PWD:/data" jykj_ocr \
     python -m jykj_ocr /data/image.png --engine multimodal
 ```
 
@@ -202,7 +217,7 @@ docker run --rm --env-file .env -v "$PWD:/data" jykj_ocr \
 ## 测试
 
 ```bash
-.venv/Scripts/python -m pytest tests -q       # 212 个用例,全部离线,无真实 API 调用
+.venv/Scripts/python -m pytest tests -q       # 237 个用例,全部离线,无真实 API 调用
 ```
 
 覆盖 models、config(别名归一化 / YAML / 环境变量优先级 / 多实例去重)、strategy
@@ -233,7 +248,7 @@ src/jykj_ocr/
 ├── cli.py                 # argparse CLI
 └── server.py              # FastAPI 路由
 config/                    # config.yaml + 4 份示例(见「配置」章节)
-tests/                     # pytest,212 passed
+tests/                     # pytest,237 passed
 scripts/                   # 诊断与真实模型回归脚本
 Dockerfile / docker-compose.yml / requirements.txt / pyproject.toml
 ```

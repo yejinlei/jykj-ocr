@@ -94,27 +94,38 @@ class EngineConfig:
     lang: str = "ch"
     prompt: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
+    #: 1-based index among entries of the same canonical type. Filled in by
+    #: :func:`from_mapping` in declared order, or pinned explicitly in yaml to
+    #: keep an entry's key variable stable across reorderings. Lets every
+    #: instance of one type read its own key (``JYKJ_OCR_MULTIMODAL_1_API_KEY``,
+    #: ``_2_``, …). ``None`` when built by hand.
+    instance: Optional[int] = None
 
     @property
     def resolved_base_url(self) -> str:
         """Resolve the base URL, checking env vars first.
 
-        Order: explicit config -> ``OPENAI_BASE_URL`` (the standard OpenAI SDK
-        env var, so one token can point at any provider). There is deliberately
-        no engine-specific URL default: every remote instance must name its
-        endpoint either here or via ``OPENAI_BASE_URL``, otherwise a key for
-        provider A could be silently sent to provider B.
+        Order: explicit config -> ``OPENAI_BASE_URL_<N>`` (only when
+        :attr:`instance` is set, so ``N`` entries of one type can point at
+        ``N`` different providers) -> ``OPENAI_BASE_URL`` ->
+        ``JYKJ_OCR_<NAME>_BASE_URL``. There is deliberately no vendor default:
+        every remote instance must name its endpoint one of those ways,
+        otherwise a key for provider A could be silently sent to provider B.
         """
         if self.base_url:
             return self.base_url.rstrip("/")
-        env_base = os.getenv("OPENAI_BASE_URL")
-        return env_base.rstrip("/") if env_base else ""
+        for var in self.base_url_env_names():
+            value = os.getenv(var)
+            if value:
+                return value.rstrip("/")
+        return ""
 
     @property
     def resolved_model(self) -> str:
         """Resolve the model name, checking env vars first.
 
-        Order: explicit config -> ``JYKJ_OCR_<NAME>_MODEL``. Models are
+        Order: explicit config -> ``JYKJ_OCR_<NAME>_<N>_MODEL`` (only when
+        :attr:`instance` is set) -> ``JYKJ_OCR_<NAME>_MODEL``. Models are
         platform-specific, so there is no engine-level default: an operator
         can still swap models per deployment via the env var (e.g.
         ``JYKJ_OCR_MULTIMODAL_MODEL=moonshotai/Kimi-K2.7-Code``) without
@@ -122,26 +133,87 @@ class EngineConfig:
         """
         if self.model:
             return self.model
-        upper = self.resolved_name.upper().replace("-", "_").replace(".", "_")
-        env_model = os.getenv(f"{_ENV_PREFIX}_{upper}_MODEL")
-        return env_model or ""
+        for var in self.model_env_names():
+            value = os.getenv(var)
+            if value:
+                return value
+        return ""
+
+    def _env_upper(self) -> str:
+        """Env-var stem for this engine type (``multimodal`` -> ``MULTIMODAL``)."""
+        return self.resolved_name.upper().replace("-", "_").replace(".", "_")
+
+    def _instance_env_names(self, templates: List[str], generic: List[str]) -> List[str]:
+        """Expand ``<N>`` templates by :attr:`instance`, numbered candidates first.
+
+        ``templates`` use ``<N>`` as the instance placeholder — ``N`` entries of
+        one type each get their own variable, without editing the config file.
+        ``generic`` are the instance-less names that every entry of the type
+        still falls back to. Numbered names go first so they always win.
+        """
+        out: List[str] = []
+        if self.instance:
+            out.extend(t.replace("<N>", str(self.instance)) for t in templates)
+        out.extend(generic)
+        return out
+
+    def base_url_env_names(self) -> List[str]:
+        """Ordered environment-variable candidates for :attr:`resolved_base_url`.
+
+        ``OPENAI_BASE_URL_<N>`` lets ``N`` entries of one type point at ``N``
+        different providers while the yaml stays free of URLs. The bare
+        ``OPENAI_BASE_URL`` is shared by every entry of the type — that is what
+        made two entries at two different providers send one platform's key to
+        the other. There is no engine-specific default: an unnamed endpoint
+        must fail rather than fall back to some vendor.
+        """
+        upper = self._env_upper()
+        return self._instance_env_names(
+            ["OPENAI_BASE_URL_<N>"],
+            ["OPENAI_BASE_URL", f"{_ENV_PREFIX}_{upper}_BASE_URL"],
+        )
+
+    def model_env_names(self) -> List[str]:
+        """Ordered environment-variable candidates for :attr:`resolved_model`.
+
+        ``JYKJ_OCR_<NAME>_<N>_MODEL`` lets each entry name its own model, so
+        the shared ``JYKJ_OCR_<NAME>_MODEL`` only needs to exist for the
+        single-platform case.
+        """
+        upper = self._env_upper()
+        return self._instance_env_names(
+            [f"{_ENV_PREFIX}_{upper}_<N>_MODEL"],
+            [f"{_ENV_PREFIX}_{upper}_MODEL"],
+        )
+
+    def api_key_env_names(self) -> List[str]:
+        """Ordered environment-variable candidates for :attr:`resolved_api_key`.
+
+        Exposed so the engines can name the exact variables they looked up in
+        their error messages, instead of telling an operator to check a single
+        generic name.
+        """
+        upper = self._env_upper()
+        return self._instance_env_names(
+            [f"{_ENV_PREFIX}_{upper}_<N>_API_KEY", f"{upper}_<N>_API_KEY"],
+            [f"{_ENV_PREFIX}_{upper}_API_KEY", f"{upper}_API_KEY", "OPENAI_API_KEY"],
+        )
 
     @property
     def resolved_api_key(self) -> str:
         """Resolve the key, checking env vars first.
 
-        Order: explicit config -> ``JYKJ_OCR_<NAME>_API_KEY`` -> ``<NAME>_API_KEY``
-        -> ``OPENAI_API_KEY`` (so a generic token works with any provider).
+        Order: explicit config -> ``JYKJ_OCR_<NAME>_<N>_API_KEY`` /
+        ``<NAME>_<N>_API_KEY`` (only when :attr:`instance` is set) ->
+        ``JYKJ_OCR_<NAME>_API_KEY`` -> ``<NAME>_API_KEY`` -> ``OPENAI_API_KEY``
+        (so a generic token still works with any provider). The bare,
+        instance-less variables are shared by every entry of the type, which is
+        why two entries pointing at two different providers 401 — that is the
+        signal to switch to the instance-scoped names.
         """
         if self.api_key:
             return self.api_key
-        upper = self.resolved_name.upper().replace("-", "_").replace(".", "_")
-        candidates = [
-            f"{_ENV_PREFIX}_{upper}_API_KEY",
-            f"{upper}_API_KEY",
-            "OPENAI_API_KEY",
-        ]
-        for var in candidates:
+        for var in self.api_key_env_names():
             value = os.getenv(var)
             if value:
                 return value
@@ -191,7 +263,26 @@ _ENGINE_KNOWN_KEYS = {
     "lang",
     "prompt",
     "prompt_file",
+    "instance",
 }
+
+
+def _assign_instances(engines: List["EngineConfig"]) -> None:
+    """Number each type's instances 1..N in declared order (in place).
+
+    The index is what lets ``N`` entries of one type each resolve a distinct key
+    (``JYKJ_OCR_MULTIMODAL_1_API_KEY``, ``_2_``, …) while the yaml stays free of
+    secrets. An operator may pin an entry's ``instance`` explicitly to keep its
+    key stable when entries are reordered; unnumbered entries skip the pinned
+    numbers. Called before dedupe so the surviving entry keeps the index its
+    operator declared.
+    """
+    next_index: Dict[str, int] = {}
+    for engine in engines:
+        key = engine.resolved_name
+        if not engine.instance:
+            engine.instance = next_index.get(key, 0) + 1
+        next_index[key] = max(next_index.get(key, 0), engine.instance)
 
 
 def _dedupe_engines(engines: List["EngineConfig"]) -> List["EngineConfig"]:
@@ -281,6 +372,7 @@ def from_mapping(data: Dict[str, Any]) -> Config:
             engines.append(_parse_engine(raw))
     if not engines:
         engines.append(EngineConfig(name="multimodal"))
+    _assign_instances(engines)
     engines = _dedupe_engines(engines)
 
     return Config(
