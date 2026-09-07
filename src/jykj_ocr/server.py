@@ -618,7 +618,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
              description=(
                  "列出全部命名策略预设(含评分模式、重试判定、引擎范围),与 CLI "
                  "`--strategy-name`、HTTP `strategy_name` 参数、`/ocr/{preset}` 路由"
-                 "一一对应。14 个显式预设 + `bestof:<mode>` 冒号语法别名,共 15 项。"
+                 "一一对应。17 个显式预设 + `bestof:<mode>` 冒号语法别名,共 18 项。"
              ),
              responses={200: {"description": "预设清单(name → 元数据)"}})
     async def presets() -> Dict[str, Any]:
