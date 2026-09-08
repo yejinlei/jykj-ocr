@@ -167,15 +167,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     from . import ocr
-
-    results = ocr(
-        args.source,
-        engine=args.engine,
-        config_path=args.config,
-        max_pages=args.max_pages,
-        dpi=args.dpi,
-        strategy_name=args.strategy_name,
+    from .engine.base import (
+        EngineError,
+        EngineNotAvailable,
+        InputError,
     )
+    from .strategy import StrategyError
+
+    try:
+        results = ocr(
+            args.source,
+            engine=args.engine,
+            config_path=args.config,
+            max_pages=args.max_pages,
+            dpi=args.dpi,
+            strategy_name=args.strategy_name,
+        )
+    except (InputError, EngineNotAvailable, EngineError, StrategyError) as exc:
+        # Mirrors the HTTP mapping (400/422/502) without a traceback: the
+        # message already names what to fix (missing endpoint, unknown preset,
+        # too few enabled engines).
+        LOG.error("识别失败：%s", exc)
+        return 1
     if not results:
         print("未识别到任何内容", file=sys.stderr)
         return 1

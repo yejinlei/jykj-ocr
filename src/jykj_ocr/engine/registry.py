@@ -16,6 +16,7 @@ from ..config import Config, EngineConfig, normalise_engine
 from ..strategy import (
     BestofEngine,
     StrategyEngine,
+    StrategyError,
     StrategyFn,
     combine_predicates,
     resolve_bestof_score,
@@ -38,6 +39,25 @@ def remote_engines() -> tuple:
     extra = os.getenv("JYKJ_OCR_REMOTE_ENGINES", "")
     names = [n.strip().lower() for n in extra.split(",") if n.strip()]
     return tuple(dict.fromkeys(list(_DEFAULT_REMOTE_ENGINES) + names))
+
+
+#: Minimum engine count that makes a comparison strategy meaningful.
+#:
+#: ``bestof*`` runs every engine and picks the best — with one engine there is
+#: nothing to compare against, so the "winner" is whatever happened to be
+#: configured (it can even lose on merit to an engine that never ran).
+#: ``seq*`` / ``cascade*`` need at least two to have anywhere to fall back to;
+#: with one engine a retry is the same engine re-reading the same image.
+#:
+#: Overridable per deployment via ``JYKJ_OCR_MIN_ENGINES`` (clamped to 1..99).
+def min_engines_for_strategy() -> int:
+    """Required engine count, read live so tests and deployments can override it."""
+    raw = os.getenv("JYKJ_OCR_MIN_ENGINES", "").strip()
+    try:
+        value = int(raw) if raw else 2
+    except ValueError:
+        value = 2
+    return min(99, max(1, value))
 
 
 #: Named strategy presets understood by ``strategy.name`` / ``strategy_name=``.
@@ -140,6 +160,18 @@ _SEQ_PRESETS = {
     "bestof-fluency": (None, False, True, "fluency", None),
 }
 
+#: Engine-count floor per preset, before the global ``min_engines_for_strategy()``.
+#:
+#: ``None`` = the global minimum for seq/cascade, and "no gate" for ``local``
+#: and ``vl`` (both are scoped presets whose one-engine result is by design —
+#: ``local`` matches ``config.local.yaml``; ``vl`` guarantees ≥1 remote or
+#: raises ``ValueError`` on its own).
+MIN_ENGINES_REQUIRED = {
+    "local": None,
+    "vl": 1,
+    "bestof": 2,
+}
+
 
 def describe_presets() -> Dict[str, Dict[str, Any]]:
     """Structured description of every named strategy preset.
@@ -161,9 +193,11 @@ def describe_presets() -> Dict[str, Dict[str, Any]]:
                 else "local_only" if name == "local"
                 else "all_enabled"
             ),
+            "min_engines": _required_engine_count(name),
         }
     out["bestof:<mode>"] = {
         "is_bestof": True,
+        "min_engines": MIN_ENGINES_REQUIRED["bestof"],
         "note": "colon syntax alias for bestof-<mode>",
     }
     return out
@@ -243,6 +277,21 @@ def engines_from_config(
     if not instances:
         instances.append(build_engine("multimodal", config))
     return instances
+
+
+def _enabled_engine_entries(config: Config) -> List[EngineConfig]:
+    """Enabled entries as :class:`EngineConfig` objects, without building them.
+
+    Counting enabled engines must not instantiate them: a remote entry without
+    a resolvable endpoint raises :class:`EngineNotAvailable` at construction
+    time, which would make a purely arithmetical gate turn into a config error
+    (and the gate would then never report its own "only N enabled" message).
+    ``local`` / ``vl`` scope flips happen earlier, so the count here is the
+    chain length that will actually run. An empty config is treated as the
+    default single multimodal engine, matching :func:`engines_from_config`.
+    """
+    enabled = [e for e in config.engines if e.enabled]
+    return enabled or [EngineConfig(name="multimodal")]
 
 
 def apply_strategy_preset(config: Config, name: str) -> Config:
@@ -360,10 +409,65 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
     else:
         output.pop("reorder_lines", None)
 
+    # ``strategy`` and ``output`` are shallow copies mutated above — write them
+    # back, along with the preset name so downstream code can see which preset
+    # produced this config.
     strategy["name"] = key
     cfg.strategy = strategy
     cfg.output = output
+
+    # Count gate. Runs last, after the ``local``/``vl`` scope flip, so it counts
+    # the engines that will actually run — ``local`` leaves the remaining local
+    # ones enabled, ``vl`` keeps exactly one remote. Applied here rather than
+    # only in build_pipeline so the short-chain failure is a 422 at the request
+    # boundary; every entry path (CLI --strategy-name, body strategy_name,
+    # /ocr/{preset}, the Python API) funnels through this function.
+    _check_strategy_engine_count(cfg, key)
     return cfg
+
+
+def _required_engine_count(preset: str) -> Optional[int]:
+    """Engine-count floor for a preset, or ``None`` to skip the check.
+
+    ``local`` is exempt outright: ``config.local.yaml`` is one local engine by
+    design, so the gate would reject a legitimate deployment. ``vl`` reports a
+    floor of one but is not gated — the requirement is met anyway, or
+    :func:`apply_strategy_preset` raises ``ValueError`` when no remote exists.
+    ``seq*`` / ``cascade*`` fall back to the global minimum; ``bestof*`` never
+    goes below two — with one engine there is nothing to compare against.
+    """
+    if preset in ("local", "vl"):
+        return MIN_ENGINES_REQUIRED[preset]
+    return max(MIN_ENGINES_REQUIRED.get(preset, min_engines_for_strategy()),
+               min_engines_for_strategy())
+
+
+def _check_strategy_engine_count(config: Config, preset: str) -> None:
+    """Refuse a comparison strategy whose engine list is too short.
+
+    This is the failure mode worth failing fast on: a single enabled engine
+    under ``bestof`` still returns an answer, so the caller sees a confident
+    ``decision`` and never learns the other candidate errored out. ``seq*``
+    with one engine is the same story minus the score — a retry is the same
+    engine re-reading the same image. Failing here surfaces it as a 422 with
+    the offending count instead of a plausible-looking result.
+
+    Called from :func:`apply_strategy_preset` (so every entry path — CLI
+    ``--strategy-name``, ``strategy_name`` on the body, ``/ocr/{preset}``, the
+    Python API — is covered) and again from :func:`build_pipeline` for the
+    raw ``score_mode`` knob, which never passes through the preset layer.
+    """
+    required = _required_engine_count(preset)
+    if required is None:
+        return
+    entries = _enabled_engine_entries(config)
+    if len(entries) >= required:
+        return
+    raise StrategyError(
+        f"strategy {preset!r} needs at least {required} engine(s), "
+        f"but only {len(entries)} is/are enabled: "
+        f"{', '.join(e.name for e in entries) or '(none)'}"
+    )
 
 
 def build_pipeline(
@@ -379,18 +483,31 @@ def build_pipeline(
 
     Bestof presets (strategy["bestof_mode"] set) assemble a
     :class:`BestofEngine` instead of :class:`StrategyEngine`.
+
+    Raises :class:`StrategyError` (HTTP 422) when the effective strategy needs
+    more engines than are enabled — see :func:`_check_strategy_engine_count`.
     """
     if engine_name:
-        engines = [build_engine(engine_name, config)]
-    else:
-        engines = engines_from_config(config)
+        return build_strategy(
+            [build_engine(engine_name, config)],
+            retries=int((config.strategy or {}).get("max_retries", 1)),
+            retry_check=resolve_retry_check(config.strategy or {}),
+        )
     strategy_cfg = config.strategy or {}
+    preset = str(strategy_cfg.get("name") or "").strip().lstrip("_").lower()
+    if not preset and strategy_cfg.get("bestof_mode"):
+        # ``score_mode`` knob without a preset name: bestof semantics.
+        preset = "bestof"
+    if preset:
+        _check_strategy_engine_count(config, preset)
+    engines = engines_from_config(config)
+    return _assemble(engines, strategy_cfg)
 
-    # Bestof family — run every engine, pick the winner by a score function.
-    # A forced engine_name means "don't use the strategy, just this one" — skip
-    # bestof in that case.
+
+def _assemble(engines: Sequence[Any], strategy_cfg: Dict[str, Any]) -> object:
+    """Pick the chain class: ``bestof*`` → :class:`BestofEngine`, else Strategy."""
     bestof_mode = strategy_cfg.get("bestof_mode")
-    if bestof_mode and not engine_name:
+    if bestof_mode:
         return BestofEngine(engines, score_mode=bestof_mode)
 
     return build_strategy(
@@ -411,6 +528,7 @@ __all__ = [
     "build_strategy",
     "describe_presets",
     "engines_from_config",
+    "min_engines_for_strategy",
     "remote_engines",
     "resolve_retry_check",
 ]

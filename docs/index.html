@@ -142,6 +142,8 @@
 
     <p style="color:var(--muted);font-size:0.9rem;margin-top:0.6rem;">优先级:单次请求 <code>strategy_name</code> &gt; <code>POST /config</code> 运行时覆盖 &gt; <code>config.yaml</code>。新引擎注册即被预设识别,远程侧用 <code>JYKJ_OCR_REMOTE_ENGINES</code> 标记。</p>
 
+    <p style="background:var(--card);border-left:3px solid var(--orange);padding:0.7rem 0.9rem;margin:1rem 0;font-size:0.9rem;"><strong>引擎个数下限</strong>:<code>seq*</code> / <code>cascade*</code> / <code>bestof*</code> 要求至少 <strong>2</strong> 个已启用引擎,不足直接报错(HTTP 422 / CLI 退出 1),不返回「看起来很正常的单引擎结果」。豁免 <code>local</code>(单引擎部署就是 <code>config.local.yaml</code>)与 <code>vl</code>(保证保留 1 条远程,没有远程则报 <code>ValueError</code>)。下限可用 <code>JYKJ_OCR_MIN_ENGINES</code> 调整(1..99,默认 2),但 <code>bestof*</code> 永不低于 2。强制单引擎(<code>--engine</code> / <code>engine=</code>)不算策略,不受约束。</p>
+
     <h2>核心特性</h2>
     <div class="grid">
       <div class="card">
@@ -150,7 +152,7 @@
       </div>
       <div class="card">
         <h3><span class="dot" style="background:var(--accent)"></span>命名策略预设</h3>
-        <p><code>local</code>/<code>vl</code>/<code>seq*</code>/<code>bestof*</code>/<code>fallback</code>/<code>quality</code> 四套预设,配置固定默认、请求可一次性临时切换;底层支持 <code>line_overlap</code>/<code>any</code> 窜行降级与 <code>bestof-fluency</code> 语义流畅度择优。</p>
+        <p><code>local</code>/<code>vl</code>/<code>seq*</code>/<code>bestof*</code>/<code>fallback</code>/<code>quality</code> 四套预设,配置固定默认、请求可一次性临时切换;底层支持 <code>line_overlap</code>/<code>any</code> 窜行降级与 <code>bestof-fluency</code> 语义流畅度择优。<code>seq*</code>/<code>cascade*</code>/<code>bestof*</code> 要求 ≥2 个已启用引擎,不足报 422。</p>
       </div>
       <div class="card">
         <h3><span class="dot" style="background:var(--green)"></span>引擎可扩展</h3>
@@ -203,7 +205,7 @@ python -m jykj_ocr serve --port 8000</code>
       <tbody>
         <tr><td><code>GET</code></td><td><code>/health</code></td><td>健康检查</td></tr>
         <tr><td><code>GET</code></td><td><code>/engines</code></td><td>可用引擎列表 + 配置顺序</td></tr>
-        <tr><td><code>GET</code></td><td><code>/presets</code></td><td>全部命名策略预设(评分模式/重试判定/引擎范围)</td></tr>
+        <tr><td><code>GET</code></td><td><code>/presets</code></td><td>全部命名策略预设(评分模式/重试判定/引擎范围/引擎个数下限 <code>min_engines</code>)</td></tr>
         <tr><td><code>GET</code></td><td><code>/config</code></td><td>当前配置(不回显 key)</td></tr>
         <tr><td><code>POST</code></td><td><code>/config</code></td><td>运行时覆盖配置</td></tr>
         <tr><td><code>DELETE</code></td><td><code>/config</code></td><td>清除运行时覆盖</td></tr>
@@ -220,14 +222,15 @@ python -m jykj_ocr serve --port 8000</code>
       <li>rapidocr 166 区域,置信度 0.97+,离线可用</li>
       <li>multimodal 在硅基流动(带厂商前缀模型 ID)与模力方舟(裸模型 ID)两个平台上均返回完整全文</li>
       <li>七类命名预设(local/vl/seq*/cascade*/bestof*)在 http://192.168.0.81:8000 实测通过,未知名称返回 400 并列出可选值</li>
-      <li><code>GET /presets</code> 返回 17 个命名预设 + <code>bestof:&lt;mode&gt;</code> 别名(共 18 项),含评分模式/重试判定/引擎范围/最大重试次数</li>
+      <li><code>GET /presets</code> 返回 17 个命名预设 + <code>bestof:&lt;mode&gt;</code> 别名(共 18 项),含评分模式/重试判定/引擎范围/最大重试次数/引擎个数下限 <code>min_engines</code>(<code>bestof*</code>=2,<code>seq*</code>/<code>cascade*</code>=2 可由 <code>JYKJ_OCR_MIN_ENGINES</code> 放宽,<code>vl</code>=1,<code>local</code>=null)</li>
+      <li>引擎个数下限已落地:<code>seq*</code> / <code>cascade*</code> / <code>bestof*</code> 在只有 1 个已启用引擎时返回 422 并列出实际启用的引擎名,CLI 退出 1;<code>local</code> 与 <code>vl</code> 豁免,强制单引擎(<code>--engine</code> / <code>engine=</code>)不受约束</li>
       <li><code>/docs</code> 全部 10 个操作按"OCR 识别"/"配置与状态"两组分类展示</li>
       <li>便捷路由 <code>/ocr/{preset}</code> / <code>/ocr/{preset}/text</code>(路由即策略)已上线,新引擎/新预设无需改路由</li>
       <li><code>/ocr/{preset}</code> 的路由本身就是策略,不再暴露 <code>retry_mode</code> / <code>score_mode</code> / <code>max_retries</code>(传了会被忽略,不报错);这三个旋钮只在 <code>/ocr</code> 与 <code>/ocr/text</code> 上存在</li>
       <li><code>GET /docs?preset=_local</code> 打开的 Swagger 按预设灰化无关字段——本地预设把 <code>model</code> / <code>base_url</code> / <code>api_key</code> / <code>prompt</code> 标为 <code>readOnly</code>,Swagger UI 直接不渲染这四个输入框;在预设输入框里改名即原地重渲染,不丢展开状态</li>
       <li><code>cascade*</code> 家族:被 reject 的尝试立刻降级下一引擎,不重试同一引擎</li>
       <li>所有引擎统一走 <code>BaseEngine.recognise</code> 的墙钟超时(rapidocr 与远程),默认 120s,可用 <code>EngineConfig.timeout</code> 覆盖,<code>timeout&lt;=0</code> 关闭</li>
-      <li><code>pytest</code> 离线测试基线 307 passed</li>
+      <li><code>pytest</code> 离线测试基线 338 passed</li>
       <li>真实模型 E2E <code>scripts/real_model_e2e.py</code>:34 项全部通过(16 个接口 + 18 个策略预设,~436s),模力方舟 <code>https://api.moark.com/v1</code> 的 <code>PaddleOCR-VL-1.5</code> 与 <code>Qwen3-VL-30B-A3B-Instruct</code> 在线实测</li>
       <li>该轮 E2E 抓到并修复:<code>image_data</code> 双前缀缺陷(文档写「完整 data URI」,实现又加一层 <code>data:</code>),已加 5 个回归用例</li>
       <li>GET /config 实测 <code>key_leaked=False</code></li>

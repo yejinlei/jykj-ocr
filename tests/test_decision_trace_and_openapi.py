@@ -194,13 +194,15 @@ def _wire_engines(monkeypatch, engines: dict, image: Path = SEAL) -> None:
 
 
 def _client(monkeypatch, specs: dict, image: Path = SEAL,
-            engines: Optional[dict] = None) -> TestClient:
+            engines: Optional[dict] = None,
+            cfg: Optional[Config] = None) -> TestClient:
     """Build the app once per test and hand back the client.
 
     ``_wire`` returns the engine instances the app is wired to. Pass them back
     through ``engines`` when a test asserts on ``.calls``: without it, ``_wire``
     builds one set of doubles and ``_client`` builds a second, and the counts
-    are read off the set nobody used.
+    are read off the set nobody used. ``cfg`` swaps the config the app loads —
+    used to exercise a single-enabled-engine deployment shape.
     """
     from jykj_ocr.server import create_app
 
@@ -208,6 +210,8 @@ def _client(monkeypatch, specs: dict, image: Path = SEAL,
         _wire(monkeypatch, specs, image)
     else:
         _wire_engines(monkeypatch, engines, image)
+    if cfg is not None:
+        monkeypatch.setattr("jykj_ocr.server.load_config", lambda path=None: cfg)
     return TestClient(create_app())
 
 

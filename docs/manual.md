@@ -190,6 +190,7 @@ export JYKJ_OCR_MULTIMODAL_2_MODEL=PaddleOCR-VL-1.5
 | `JYKJ_OCR_CONFIG` | 可选 | 配置文件路径(默认 `config/config.yaml`) |
 | `JYKJ_OCR_PORT` | 可选 | HTTP 服务端口(默认 8000) |
 | `JYKJ_OCR_REMOTE_ENGINES` | 可选 | 逗号分隔,把新引擎追加进远程名单(`vl` 侧),见 §9.2 |
+| `JYKJ_OCR_MIN_ENGINES` | 可选 | `seq*` / `cascade*` 所需最少已启用引擎数(1..99,默认 2),见 §9.1 |
 
 > **多实例:序号是「同类型里的第 N 条」。** 各类型独立编号,rapidocr 不占
 > `multimodal` 的号。`base_url` / `model` / `api_key` 三个字段都用同一套规则,
@@ -342,10 +343,12 @@ flowchart TB
 .venv/Scripts/python -m pytest tests -q
 ```
 
-- **CI 基线**:307 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
+- **CI 基线**:338 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
 - 覆盖:models、config(别名归一化、YAML、环境变量优先级、多 multimodal 实例去重)、
   strategy、engines(multimodal OpenAI 响应解析、rapidocr 1.x/1.4.x/2.x 返回形态)、
   策略预设(local/vl/seq*/cascade*/bestof*、deepcopy 不变性、`JYKJ_OCR_REMOTE_ENGINES` 扩展)、
+  引擎个数下限(`tests/test_strategy_engine_count.py`:registry 层、HTTP 422、`/presets` 元数据、
+  `JYKJ_OCR_MIN_ENGINES` 钳位)、
   窜行检测与阅读顺序重排、inputs 魔数识别、HTTP 路由与预设端点
 
 端到端接口测试(需联网 + 真实模型,非 CI):
@@ -625,7 +628,7 @@ JYKJ_OCR_PORT=8000 python -m uvicorn jykj_ocr.server:app --host 0.0.0.0
 | `DELETE` | `/config` | — | ❌ 单独结构 |
 | `GET` | `/health` | — | ❌ `{status, engines}` |
 | `GET` | `/engines` | — | ❌ `{engines, configured}` |
-| `GET` | `/presets` | — | ❌ `{presets}`(见 §9.1) |
+| `GET` | `/presets` | — | ❌ `{presets}`(见 §9.1.1;每项含 `min_engines` 引擎个数下限) |
 
 **四个 OCR 端点返回结构完全一致**(`{pages, text, engine, page_count, score, score_mode, decision}`)。只有 `format=text`/`markdown` 时退化为纯文本。`{preset}` 路径参数见 §9.1(命名策略预设)。
 
@@ -1190,6 +1193,11 @@ curl -s http://localhost:8000/engines
 # configured 是实例级列表:每个 multimodal 条目各占一行,带 model/base_url 指纹,便于区分同名引擎
 # 本地引擎不读 URL/模型,key,所以 model 与 base_url 恒为空串(不会因为共享的
 # OPENAI_BASE_URL 而带上一个它从不使用的端点)
+
+# 全部命名预设(18 项,含 bestof:<mode> 别名)
+curl -s http://localhost:8000/presets
+# 每项带 retry_mode / reorder_lines / is_bestof / score_mode / engine_scope,
+# 以及 min_engines——该预设要求的已启用引擎个数下限(null 表示不限)
 ```
 
 ### 8.8 异常映射
@@ -1218,7 +1226,7 @@ flowchart LR
 | `InputError` | 400 | 文件不存在、图片损坏、URL 无法下载、base64 解码失败 | `{"detail":"input not found: /tmp/x.png"}` |
 | `EngineNotAvailable` | 422 | 缺少依赖库、API key 为空、base_url 未配置 | `{"detail":"multimodal requires OPENAI_API_KEY"}` |
 | `EngineError` | 502 | 引擎调用超时、HTTP 402 余额不足、网络错误 | `{"detail":"HTTP 402","engine":"multimodal"}` |
-| `StrategyError` | 422 | 策略链中所有引擎均失败且无可用结果 | `{"detail":"all engines exhausted"}` |
+| `StrategyError` | 422 | 策略链中所有引擎均失败且无可用结果;或预设要求的引擎数不足(见 §9.1.1) | `{"detail":"strategy 'bestof' needs at least 2 engine(s), but only 1 is/are enabled: rapidocr"}` |
 | 未知 preset | 404 | `/ocr/xxx` 路由既非引擎也非策略预设 | `{"detail":"unknown preset 'xxx'..."}` |
 | 格式错误 | 400 | 图片三选一只传一个、format 非法、strategy JSON 非对象 | `{"detail":"provide exactly one of image_url, image_b64, or image_data"}` |
 
@@ -1250,6 +1258,37 @@ flowchart LR
     class SEQ seq
     class BEST best
 ```
+
+#### 9.1.1 引擎个数下限
+
+`seq*` / `cascade*` / `bestof*` 要求**至少 2 个已启用引擎**,不足直接报
+`StrategyError`(HTTP 422 / CLI 退出 1),不会返回一个「看起来很正常的单引擎结果」:
+`bestof` 只有 1 个候选时,评分赢的是一个从不存在的对手;`seq` 只有 1 个引擎时,
+`decision.engine_order` 是一条从不分叉的链,看不出配置是否真的按预期工作。
+
+豁免的是 `local` 与 `vl`:`local` 的单引擎部署就是 `config/config.local.yaml`,是合法
+形态而非配置错误;`vl` 保证保留 1 条远程引擎,数量不足时它自己报 `ValueError`。
+
+```
+GET /presets
+{"presets": {
+  "local":  {"min_engines": null, ...},   // 不限
+  "vl":     {"min_engines": 1, ...},      # 由预设自身逻辑保证
+  "seq":    {"min_engines": 2, ...},
+  "bestof-fluency": {"min_engines": 2, ...}
+}}
+```
+
+下限可由 `JYKJ_OCR_MIN_ENGINES` 调整(1..99,默认 2,非法值钳位),但**只放宽
+`seq*` / `cascade*`**——`bestof*` 恒为 2,因为那个旋钮是为放宽顺序链准备的,不是用来
+关掉候选对比的。
+
+不受约束的情形:
+
+- `--engine` / `engine=xxx` 强制单个引擎——那是直连,不是策略
+- 不指定任何预设、也没设 `bestof_mode` 的默认链——按配置里的引擎顺序原样跑
+- `strategy.bestof_mode` 旋钮单独出现(没有预设名)——同样走 `build_pipeline` 里的
+  同一条检查,结果一致
 
 ### 9.2 顺序预设(`seq*`,走 `StrategyEngine`)
 

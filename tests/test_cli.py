@@ -180,6 +180,35 @@ def test_list_engines_exits_without_ocr(fake_ocr):
     assert fake_ocr == []
 
 
+def test_ocr_exception_is_a_clean_exit_1(monkeypatch, caplog):
+    """引擎/策略错误退出 1 并打印原因,不吐 traceback。"""
+    import jykj_ocr
+    from jykj_ocr.engine.base import EngineNotAvailable
+
+    def _boom(source, **kwargs):
+        raise EngineNotAvailable("no base URL for multimodal engine")
+
+    monkeypatch.setattr(jykj_ocr, "ocr", _boom)
+    with caplog.at_level("ERROR"):
+        assert main([IMAGE, "--engine", "multimodal"]) == 1
+    assert "no base URL" in caplog.text
+
+
+def test_strategy_error_is_a_clean_exit_1(monkeypatch, caplog):
+    """`--strategy-name bestof` 只有 1 个引擎时退出 1,信息里带所需个数。"""
+    import jykj_ocr
+    from jykj_ocr.strategy import StrategyError
+
+    def _boom(source, **kwargs):
+        raise StrategyError(
+            "strategy 'bestof' needs at least 2 engine(s), but only 1 is/are enabled")
+
+    monkeypatch.setattr(jykj_ocr, "ocr", _boom)
+    with caplog.at_level("ERROR"):
+        assert main([IMAGE, "--strategy-name", "bestof"]) == 1
+    assert "at least 2 engine(s)" in caplog.text
+
+
 # ---------------------------------------------------------------- 解析器形状
 
 

@@ -61,7 +61,7 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 │   ├── config.vl.yaml       # 示例 2:只远程 VL(硅基流动 + 模力方舟)
 │   ├── config.seq.yaml      # 示例 3:local + 1 远程兜底
 │   └── config.bestof.yaml   # 示例 4:local + 2 远程,bestof_mode: smart
-├── tests/                   # pytest,307 个用例(307 passed)
+├── tests/                   # pytest,338 个用例(338 passed)
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / pyproject.toml
 ├── .env.example             # 占位符模板(真实 key 走 export / Docker -e,本仓库不保留 .env)
@@ -74,7 +74,7 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 # 安装(仅外部依赖;rapidocr_onnxruntime 按需要单独装)
 .venv/Scripts/python -m pip install -r requirements.txt
 
-# 运行测试(目前 307 passed)
+# 运行测试(目前 338 passed)
 .venv/Scripts/python -m pytest tests -q
 
 # CLI 识别(source 是位置参数,没有 ocr 子命令,也没有 -i)
@@ -125,6 +125,17 @@ docker compose up -d
     `bestof-longest`(文本最长)/`bestof-fluency`(短语密度+CJK 标点−单字碎片惩罚)/
     `bestof:<mode>`(语法别名)。
   - legacy 别名:`fallback` == `seq` / `quality` == `seq-any`(保留兼容)。
+  - **引擎个数下限**:`seq*` / `cascade*` / `bestof*` 要求 ≥2 个已启用引擎,不足抛
+    `StrategyError`(HTTP 422 / CLI 退出 1)。检查在 `apply_strategy_preset` 的最后一步
+    (`_check_strategy_engine_count`),在 `local` / `vl` 的 `enabled` 翻转**之后**,统计的才是
+    真正会跑的链;`build_pipeline` 对裸 `score_mode` 旋钮再做一次同样的检查(它不走预设层)。
+    `local` 完全豁免(单引擎部署就是 `config.local.yaml`),`vl` 下限报 1 但不拦(它自己保证
+    保留 1 条远程,否则抛 `ValueError`)。下限可由环境变量 `JYKJ_OCR_MIN_ENGINES` 调整
+    (`min_engines_for_strategy()`,1..99 钳位,默认 2,实时读取),但 `bestof*` 恒为 2——
+    那旋钮只放宽 `seq*` / `cascade*`。计数用 `_enabled_engine_entries()` 按 `enabled` 标志
+    做结构过滤,**不构造引擎**:构造会因端点解析不出来抛 `EngineNotAvailable`,一个纯算术
+    检查不能变成配置错误。`/presets` 的每项带 `min_engines` 字段。`engine_name` 强制单引擎
+    不算策略,不受约束。
   - `apply_strategy_preset` 返回 deepcopy,输入 config 不被改动;未知名称 CLI 报
     argparse 错、HTTP 返回 400。远程/本地划分走 `remote_engines()`(内置
     multimodal + 环境变量 `JYKJ_OCR_REMOTE_ENGINES="a,b"`),新引擎默认归
@@ -220,6 +231,6 @@ docker compose up -d
 3. 不要往 repo 提交真实 API key;`.env` 已 gitignore,新环境用 `.env.example` 起手。
 4. 加新引擎:实现 `BaseEngine` 子类 + `_recognise_impl` + `_wrap`,用 `@register("name")` 装饰工厂函数;
    若要保留惰性 import,在 `engine/__init__.py` 里 `register_lazy` 即可。
-5. 改 API 契约前跑一遍 `pytest tests -q`;当前 307 passed 是基线。
+5. 改 API 契约前跑一遍 `pytest tests -q`;当前 338 passed 是基线。
 6. `engines_from_config` 不带显式 names 时只用 **enabled** 引擎(尊重 `enabled: false`);
    加新引擎后跑一遍预设测试确认 `local`/`vl` 归类正确(远程名单外的都进 local)。

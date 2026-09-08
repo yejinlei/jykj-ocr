@@ -61,6 +61,14 @@ engines:
 legacy 别名:`fallback` == `seq`,`quality` == `seq-any`。`retry_mode` 可选
 `no_text` / `low_confidence` / `line_overlap` / `any` / `none`。
 
+**引擎个数下限**:`seq*` / `cascade*` / `bestof*` 要求至少 2 个已启用引擎,不足直接
+报错(HTTP 422 / CLI 退出 1),不会返回一个「看起来很正常的单引擎结果」——`bestof`
+只有 1 个候选时,评分赢的是一个从不存在的对手。豁免的是 `local` 与 `vl`:`local` 的
+单引擎部署就是 `config.local.yaml`,`vl` 保证保留 1 条远程(没有远程则报 `ValueError`)。
+下限可由 `JYKJ_OCR_MIN_ENGINES` 调整(1..99,默认 2),但 `bestof*` 永不低于 2——
+那个旋钮是为放宽 `seq*` 链准备的,不是用来关掉对比的。`--engine` / `engine=` 强制单
+引擎不算策略,不受约束。
+
 ## 安装
 
 ```bash
@@ -101,6 +109,8 @@ URL / 模型 / key**:
 | `JYKJ_OCR_MULTIMODAL_<N>_MODEL` | 第 N 条的模型 |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `JYKJ_OCR_MULTIMODAL_MODEL` | 不带序号的回退,该类型**所有条目共享**——只有单平台才够用 |
 | `JYKJ_OCR_CONFIG` / `JYKJ_OCR_PORT` | 配置文件路径 / 服务端口 |
+| `JYKJ_OCR_MIN_ENGINES` | 策略所需最少引擎数(1..99,默认 2);只放宽 `seq*` / `cascade*`,`bestof*` 恒为 2 |
+| `JYKJ_OCR_REMOTE_ENGINES` | 逗号分隔,追加视为「远程」的引擎名(影响 `local` / `vl` 的划分) |
 
 ```bash
 export OPENAI_BASE_URL_1=https://api.siliconflow.cn/v1     # 第 1 条
@@ -175,7 +185,7 @@ python -m jykj_ocr serve          # 或 JYKJ_OCR_PORT=9000 ...
 |------|------|------|
 | `GET` | `/health` | 健康检查 |
 | `GET` | `/engines` | 可用引擎 + 当前引擎顺序 |
-| `GET` | `/presets` | 全部命名预设的元数据 |
+| `GET` | `/presets` | 全部命名预设的元数据(含每个预设的引擎个数下限 `min_engines`) |
 | `GET` / `POST` / `DELETE` | `/config` | 查看 / 运行时覆盖 / 清除覆盖(不返回 key 明文) |
 | `POST` | `/ocr` | multipart 上传识别 |
 | `POST` | `/ocr/text` | JSON body,按 `image_url` / `image_b64` / `image_data` |
@@ -259,12 +269,14 @@ docker run --rm -e OPENAI_API_KEY=sk-... -v "$PWD:/data" jykj_ocr \
 ## 测试
 
 ```bash
-.venv/Scripts/python -m pytest tests -q       # 307 个用例,全部离线,无真实 API 调用
+.venv/Scripts/python -m pytest tests -q       # 338 个用例,全部离线,无真实 API 调用
 ```
 
 覆盖 models、config(别名归一化 / YAML / 环境变量优先级 / 多实例去重)、strategy
 (重试链 / 谓词)、engines(multimodal 的 OpenAI 响应解析、rapidocr 的 1.x / 1.4.x 返回
 形态)、server(HTTP 路由与预设、三种图片来源)、presets(`seq*` / `cascade*` / `bestof*`)、
+引擎个数下限(`tests/test_strategy_engine_count.py`:registry 层 + HTTP 422 + `/presets`
+元数据)、
 cli(`serve` 关键字解析、JSON 输出、退出码)。
 
 真实模型回归(需联网与真实 key,非 CI 基线):
@@ -300,7 +312,7 @@ src/jykj_ocr/
 ├── cli.py                 # argparse CLI
 └── server.py              # FastAPI 路由
 config/                    # config.yaml + 4 份示例(见「配置」章节)
-tests/                     # pytest,307 passed
+tests/                     # pytest,338 passed
 scripts/                   # 诊断与真实模型回归脚本
 Dockerfile / docker-compose.yml / requirements.txt / pyproject.toml
 ```
