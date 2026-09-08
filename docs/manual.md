@@ -342,7 +342,7 @@ flowchart TB
 .venv/Scripts/python -m pytest tests -q
 ```
 
-- **CI 基线**:237 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
+- **CI 基线**:307 个用例,全部离线运行,无真实 API 调用,monkeypatch 模拟引擎返回
 - 覆盖:models、config(别名归一化、YAML、环境变量优先级、多 multimodal 实例去重)、
   strategy、engines(multimodal OpenAI 响应解析、rapidocr 1.x/1.4.x/2.x 返回形态)、
   策略预设(local/vl/seq*/cascade*/bestof*、deepcopy 不变性、`JYKJ_OCR_REMOTE_ENGINES` 扩展)、
@@ -627,7 +627,7 @@ JYKJ_OCR_PORT=8000 python -m uvicorn jykj_ocr.server:app --host 0.0.0.0
 | `GET` | `/engines` | — | ❌ `{engines, configured}` |
 | `GET` | `/presets` | — | ❌ `{presets}`(见 §9.1) |
 
-**四个 OCR 端点返回结构完全一致**(`{pages, text, engine, page_count}`)。只有 `format=text`/`markdown` 时退化为纯文本。`{preset}` 路径参数见 §9.1(命名策略预设)。
+**四个 OCR 端点返回结构完全一致**(`{pages, text, engine, page_count, score, score_mode, decision}`)。只有 `format=text`/`markdown` 时退化为纯文本。`{preset}` 路径参数见 §9.1(命名策略预设)。
 
 ### 8.3 输入格式
 
@@ -818,9 +818,16 @@ curl -s http://localhost:8000/ocr/text \
   ],
   "text": "永和九年,岁在癸丑...\n\n(多页时用双换行拼接)",
   "engine": "rapidocr",
-  "page_count": 1
+  "page_count": 1,
+  "score": null,
+  "score_mode": "",
+  "decision": null
 }
 ```
+
+> **顶层的 `score` / `score_mode` / `decision`** 与 `pages[0]` 里的同名字段相同——
+> 一条 pipeline 服务所有页,策略判定对每页都一样,顶层是便捷副本,`pages[]` 里仍保留
+> 完整一份。单引擎直连(`/ocr?engine=rapidocr`)不走策略,这三个字段为 `null` / 空串。
 
 **字段说明**:
 
@@ -838,9 +845,13 @@ curl -s http://localhost:8000/ocr/text \
 | `pages[].regions[].confidence` | float | 置信度 0.0–1.0 |
 | `pages[].regions[].bbox` | object | 边界框(含 x1/y1/x2/y2/width/height) |
 | `pages[].regions[].engine` | string | 识别该区域的引擎 |
+| `pages[].score` | float / null | 该页结果的策略分数(bestof 为赢家得分,seq 为平均置信度×100);单引擎直连为 `null` |
+| `pages[].score_mode` | string | 打分口径(`smart`/`fastest`/`highest_confidence`/`longest`/`fluency`;seq 家族为 `mean_confidence`) |
+| `pages[].decision` | object / null | 策略判定轨迹,见下方小节 |
 | `text` | string | 所有页拼接后的完整文本 |
 | `engine` | string | 最终使用的引擎(单页时等于 `pages[0].engine`) |
 | `page_count` | int | 页数 |
+| `score` / `score_mode` / `decision` | float / string / object | 顶层便捷副本,等于 `pages[0]` 的同名字段 |
 
 **输出结构示意**:
 
@@ -908,7 +919,102 @@ flowchart TB
 }
 ```
 
-#### 8.4.2 text / markdown 格式(`format=text` 或 `format=markdown`)
+#### 8.4.2 `decision` 字段详解
+
+`decision` 的形状取决于走的是哪条策略链。
+
+**`StrategyEngine`(seq / cascade / fallback / quality / local / vl)** —
+`reason` 是 `first_accepted`(首个候选命中重试判定)或 `all_rejected_fallback`(全被拒,返回最后一条);
+`accepted` / `rejected` 里每条都带同一套指标,可以直接看出「因为什么才被降级」:
+
+```json
+{
+  "selected": "multimodal",
+  "reason": "first_accepted",
+  "engine_order": ["rapidocr", "multimodal"],
+  "retries": 1,
+  "accepted": [{
+    "engine": "multimodal", "model": "PaddleOCR-VL-1.5",
+    "attempt": 1, "own_elapsed_ms": 3709, "ok": true,
+    "mean_confidence": 1.0, "region_count": 1, "char_count": 324,
+    "garbled_layout": false
+  }],
+  "rejected": [{
+    "engine": "rapidocr", "model": "rapidocr-onnxruntime",
+    "attempt": 1, "own_elapsed_ms": 20234, "ok": true,
+    "mean_confidence": 0.9108, "region_count": 166, "char_count": 488,
+    "garbled_layout": true
+  }],
+  "fallback": false,
+  "total_elapsed_ms": 23943
+}
+```
+
+上面这条 `rejected` 里 `garbled_layout: true` 就是 `/ocr/seq-any` 把它换掉的原因——
+窜行检出,配合 `retry_mode=any` 降级到 VL。`attempt` 是该引擎的第几次尝试,
+`own_elapsed_ms` 是引擎自身耗时(区别于 `total_elapsed_ms`——后者含被拒与重试的全部
+墙钟时间)。`cascade*` 家族的差别只在于 `retries` 是 `0`,被拒的候选直接进 `rejected`
+数组、立刻换下一个引擎,不再重试同一引擎。任何引擎抛异常时,`errors` 是
+`[{engine, error}]`,**异常不使整次请求失败**——其余候选照常参与判定。
+
+**`BestofEngine`(bestof / bestof-smart / bestof-fastest / bestof-confidence /
+bestof-longest / bestof-fluency / `bestof:<mode>`)** — `ranked` 数组给出每个候选的
+完整评分,`detail` 按所用打分口径拆到分量。硅基流动实测
+(`moonshotai/Kimi-K2.7-Code` + `PaddlePaddle/PaddleOCR-VL-1.5` + 本地 rapidocr):
+
+```json
+{
+  "selected": "multimodal",
+  "reason": "highest_smart_score",
+  "score_mode": "smart",
+  "engine_order": ["rapidocr", "multimodal", "multimodal"],
+  "total_elapsed_ms": 204007,
+  "ranked": [
+    {
+      "engine": "multimodal", "model": "PaddlePaddle/PaddleOCR-VL-1.5", "ok": true,
+      "score": 116.0, "mean_confidence": 1.0, "region_count": 1,
+      "char_count": 324, "garbled_layout": false, "own_elapsed_ms": 3709,
+      "detail": {
+        "confidence_pts": 100.0, "garbled_penalty": 0.0, "length_nudge": 1.0,
+        "phrase_bonus": 15.0, "punct_bonus": 0.0, "frag_penalty": 0.0,
+        "single_chars": 0, "mean_phrase_len": 324.0
+      }
+    },
+    {
+      "engine": "rapidocr", "model": "rapidocr-onnxruntime", "ok": true,
+      "score": 49.0305, "mean_confidence": 0.9108, "region_count": 166,
+      "char_count": 488, "garbled_layout": true, "own_elapsed_ms": 20234,
+      "detail": {
+        "confidence_pts": 91.084, "garbled_penalty": -20.0, "length_nudge": 1.0,
+        "phrase_bonus": 1.946, "punct_bonus": 0.0, "frag_penalty": 25.0,
+        "single_chars": 122, "mean_phrase_len": 1.95
+      }
+    }
+  ],
+  "errors": [
+    {"engine": "multimodal", "error": "EngineError: multimodal timed out after 180s"}
+  ]
+}
+```
+
+`smart` 口径的读数:`PaddleOCR-VL-1.5` 是整段连续输出,`mean_phrase_len` 324 直接顶到
+短语长度奖赏的上限 15;`rapidocr` 122 个单字碎片 + 窜行,`garbled_penalty` −20 与
+`frag_penalty` 25 加起来吃掉 45 分,尽管它的 `char_count` 更长(488 vs 324)、
+`confidence_pts` 也不低,总分仍只有 49.03。第三条 `multimodal`
+(`moonshotai/Kimi-K2.7-Code`)因响应超过 180s 进入 `errors`,不计入 `ranked`。
+
+`bestof-*` 各自的 `detail` 只报自己读的那一项:`highest_confidence` 报
+`mean_confidence`,`longest` 报 `char_count`,`fastest` 报 `own_elapsed_ms`,
+`fluency` 报 `phrase_bonus` / `punct_bonus` / `frag_penalty` / `single_chars` /
+`mean_phrase_len`;`smart` 报 `confidence_pts` + `garbled_penalty` + `length_nudge`
+再拼上同一套 fluency 分量(因为 smart 就是把流畅度加权进总分)。各分量的上限是:
+`phrase_bonus` ≤ 15(平均短语长度,30 字符封顶前的线性段)、`punct_bonus` ≤ 5(CJK 标点比例)、
+`frag_penalty` ≤ 25(单字碎片数 × 0.3,封顶)、`garbled_penalty` 固定 −20。
+
+单引擎直连(`/ocr?engine=rapidocr`)不走任何策略,`score` / `score_mode` / `decision`
+分别是 `null` / `""` / `null`。
+
+#### 8.4.3 text / markdown 格式(`format=text` 或 `format=markdown`)
 
 直接返回拼接后的纯文本(每个页面的 markdown 卡片用双换行拼接),
 无 JSON 包裹,`Content-Type: text/plain`:

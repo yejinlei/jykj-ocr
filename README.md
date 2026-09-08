@@ -182,14 +182,45 @@ python -m jykj_ocr serve          # 或 JYKJ_OCR_PORT=9000 ...
 | `POST` | `/ocr/{preset}` | 路由即策略(multipart) |
 | `POST` | `/ocr/{preset}/text` | 路由即策略(JSON) |
 
-四个 OCR 端点返回结构一致:`{pages, text, engine, page_count}`;`format=text/markdown`
-时退化为纯文本。form / JSON 字段:`file` 或 `image_url`/`image_b64`/`image_data`、
-`engine`、`model`、`base_url`、`api_key`、`prompt`、`strategy`(JSON 字符串)、
-`strategy_name`、`retry_mode`、`score_mode`、`max_retries`、`max_pages`、`dpi`、`format`。
+四个 OCR 端点返回结构一致:`{pages, text, engine, page_count, score, score_mode, decision}`;
+`format=text/markdown` 时退化为纯文本。
+
+**响应里的策略痕迹**:除 `pages[].text` 等识别字段外,每个 `pages[]` 元素和顶层都带
+`score` / `score_mode` / `decision`,说明「为什么选中这个引擎」。`StrategyEngine`
+(seq/cascade 家族)的 `decision` 给 `selected` / `reason`(`first_accepted` 或
+`all_rejected_fallback`)/ `engine_order` / `retries` / `accepted`(命中那条,含
+`mean_confidence` / `region_count` / `char_count` / `garbled_layout`)/ `rejected`(被
+拒绝的候选,同一套指标,可看出「因为窜行才降级」这类原因)/ `fallback` /
+`total_elapsed_ms`,异常时还有 `errors`;`BestofEngine` 的 `decision` 给 `reason`
+(`highest_<mode>_score`)/ `score_mode` / `engine_order` / `total_elapsed_ms` 与
+`ranked` 数组——**每个候选的完整评分明细**,`detail` 里按所用打分口径拆到分量
+(`smart`: `confidence_pts` − `garbled_penalty` + `length_nudge` + 流畅度分量;
+`fluency`: 短语密度与单字碎片惩罚;`highest_confidence` / `longest` / `fastest` 各只
+报自己读的那一项)。单引擎直连(`/ocr?engine=rapidocr`)不产生策略,这三个字段是
+`null` / 空串。详细示例与两种策略链的 `decision` 结构详解见 `docs/manual.md` §8.4.1 / §8.4.2。
+
+form / JSON 字段分两组。通用字段:`file` 或 `image_url`/`image_b64`/`image_data`、
+`engine`、`model`、`base_url`、`api_key`、`prompt`、`max_pages`、`dpi`、`format`。
+策略旋钮——`strategy`(JSON 字符串)、`strategy_name`、`retry_mode`、`score_mode`、
+`max_retries`——**只在 `/ocr` 与 `/ocr/text` 上存在**;`/ocr/{preset}` 与
+`/ocr/{preset}/text` 的路由本身就是策略,所以不暴露这三个旋钮(传了会被忽略,不报错)。
 `model` / `base_url` / `api_key` / `prompt` 只对远程引擎生效,且都是**一次性**覆盖——
 `base_url` + `api_key` 留空时仍按原顺序回退环境变量或配置文件里的值,所以 `/vl` 可以在
 单次请求内切到另一个平台或账号,不需要动 `POST /config`。异常映射:`InputError → 400`、
 `EngineNotAvailable` / `StrategyError → 422`、`EngineError → 502`。
+
+Swagger 的「Generate cURL」会把每个可选字段填成类型名字面量(`retry_mode=string`、
+`max_retries=integer`)。这些值被 `_clean()` 当成「没传」处理,不会误触发引擎切换或 400;
+真正填错的值(如 `retry_mode=nonsense`、`max_retries=abc`)仍返回 400。
+
+**按预设灰化无关字段**:`/docs?preset=_local` 打开的 Swagger 会针对该预设把「不相关」的
+输入框直接省略。`engine_scope=local_only` 的预设(`local`)把 `model` / `base_url` /
+`api_key` / `prompt` 标为 `readOnly`,Swagger UI 对 `readOnly` 字段的处理是**不渲染**,
+所以它们既不显示也不可填;`remote_vl_only`(`vl`)与 `all_enabled`(`seq*` / `cascade*` /
+`bestof*`)不做任何灰化。改动只作用在 `/ocr/{preset}` 与 `/ocr/{preset}/text` 这两条
+路由的 schema 克隆上——共享的 `TextRequest`(被 `/ocr/text` 引用)始终保持未灰化。
+页面内的预设输入框改名后,`specActions.updateSpec` 原地重渲染,已展开的 opblock、
+"Try it out" 状态与滚动位置都不丢;`?preset=` 同步写回 URL,刷新不丢。
 
 `GET /config` 与 `GET /engines` 对离线引擎(rapidocr)不显示凭证:`model` 与 `base_url`
 为空串、`has_api_key` 为 `false`,即便共享的 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 已解析
@@ -228,7 +259,7 @@ docker run --rm -e OPENAI_API_KEY=sk-... -v "$PWD:/data" jykj_ocr \
 ## 测试
 
 ```bash
-.venv/Scripts/python -m pytest tests -q       # 237 个用例,全部离线,无真实 API 调用
+.venv/Scripts/python -m pytest tests -q       # 307 个用例,全部离线,无真实 API 调用
 ```
 
 覆盖 models、config(别名归一化 / YAML / 环境变量优先级 / 多实例去重)、strategy
@@ -246,6 +277,16 @@ JYKJ_OCR_PORT=8010 .venv/Scripts/python -m jykj_ocr serve &  # 起服务
     http://127.0.0.1:8010 tests/兰亭序.jpeg                   # 34 项,约 7 分钟
 ```
 
+另有一轮硅基流动实测(`https://api.siliconflow.cn/v1`,模型
+`moonshotai/Kimi-K2.7-Code` + `PaddlePaddle/PaddleOCR-VL-1.5`):`/ocr/_vl` 与
+`/ocr/_bestof` 均返回 200,两条 `multimodal` 条目都成功命中。`bestof` 的
+`decision.ranked` 排出两项——`PaddleOCR-VL-1.5` 3709ms / 324 字 / score 116.0 胜出,
+`rapidocr` 20234ms / 488 字 / score 49.03 落选,原因写在 `detail`:窜行
+`garbled_penalty: -20.0` + 122 个单字碎片 `frag_penalty: 25.0`,短语平均长度只有 1.95;
+`PaddleOCR-VL-1.5` 则 `phrase_bonus: 15.0`、`mean_phrase_len: 324.0`。Kimi 的长响应
+容易撞到默认 180s 超时,超时那条进入 `decision.errors` 而不是整体 502,不影响其余候选
+被正常打分。
+
 ## 项目布局
 
 ```
@@ -259,7 +300,7 @@ src/jykj_ocr/
 ├── cli.py                 # argparse CLI
 └── server.py              # FastAPI 路由
 config/                    # config.yaml + 4 份示例(见「配置」章节)
-tests/                     # pytest,237 passed
+tests/                     # pytest,307 passed
 scripts/                   # 诊断与真实模型回归脚本
 Dockerfile / docker-compose.yml / requirements.txt / pyproject.toml
 ```

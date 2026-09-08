@@ -61,7 +61,7 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 │   ├── config.vl.yaml       # 示例 2:只远程 VL(硅基流动 + 模力方舟)
 │   ├── config.seq.yaml      # 示例 3:local + 1 远程兜底
 │   └── config.bestof.yaml   # 示例 4:local + 2 远程,bestof_mode: smart
-├── tests/                   # pytest,237 个用例(237 passed)
+├── tests/                   # pytest,307 个用例(307 passed)
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / pyproject.toml
 ├── .env.example             # 占位符模板(真实 key 走 export / Docker -e,本仓库不保留 .env)
@@ -74,7 +74,7 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 # 安装(仅外部依赖;rapidocr_onnxruntime 按需要单独装)
 .venv/Scripts/python -m pip install -r requirements.txt
 
-# 运行测试(目前 237 passed)
+# 运行测试(目前 307 passed)
 .venv/Scripts/python -m pytest tests -q
 
 # CLI 识别(source 是位置参数,没有 ocr 子命令,也没有 -i)
@@ -94,6 +94,15 @@ docker compose up -d
 
 - **FastAPI**:
   - `GET /health`,`GET /engines`,`GET /presets`(全部命名预设的元数据),`GET /config`,`POST /config`(运行时覆盖模型/引擎/策略),`DELETE /config`
+  - `GET /docs` 支持可选 `?preset=_local`(也可 `vl`/`seq*`/`bestof*`,前导 `_` 可省):按该预设的 `engine_scope` 改写 spec。`local_only` 把
+    `model`/`base_url`/`api_key`/`prompt` 标为 `readOnly`——Swagger UI 对 `readOnly` 字段是**整项不渲染**(不是置灰,是不出输入框),
+    所以「不可填」等于「不出现」,无需任何前端渲染逻辑;改动只落在 `/ocr/{preset}` 与 `/ocr/{preset}/text` 的
+    路由级 schema 克隆上,共享 `TextRequest`(被 `/ocr/text` 引用)保持未灰化。
+    页面注入的脚本用 `specActions.updateSpec` 原地重渲染:改预设名不丢展开的 opblock / "Try it out" 状态 / 滚动位置,
+    并把 `?preset=` 用 `history.replaceState` 同步回 URL。Swagger UI 实例由服务端在 HTML 里补一行
+    `window.__jykjOcrUI = ui;` 暴露出来(否则 `const ui` 是词法声明,拿不到)。
+    `swagger-ui-dist` 在 HTML 里同时 pin 死 `@5.32.2`(JS 与 CSS)——`specActions.updateSpec` 这类内部
+    action 名不能随浮动 `@5` 悄悄变化。注意 `specActions.disabling` 在该版本不存在,所有 action 调用都要 typeof 守卫。
   - `POST /ocr`(multipart,文件 + 可选 `engine`/`model`/`prompt`/`strategy`/`strategy_name`/`max_pages`/`dpi`/`format`)
   - `POST /ocr/{preset}`(multipart,路由即策略)
   - `POST /ocr/text`(JSON body,图片来源三选一:`image_url`(路径/URL) / `image_b64`(base64 字符串) / `image_data`(完整 data URI))
@@ -211,6 +220,6 @@ docker compose up -d
 3. 不要往 repo 提交真实 API key;`.env` 已 gitignore,新环境用 `.env.example` 起手。
 4. 加新引擎:实现 `BaseEngine` 子类 + `_recognise_impl` + `_wrap`,用 `@register("name")` 装饰工厂函数;
    若要保留惰性 import,在 `engine/__init__.py` 里 `register_lazy` 即可。
-5. 改 API 契约前跑一遍 `pytest tests -q`;当前 237 passed 是基线。
+5. 改 API 契约前跑一遍 `pytest tests -q`;当前 307 passed 是基线。
 6. `engines_from_config` 不带显式 names 时只用 **enabled** 引擎(尊重 `enabled: false`);
    加新引擎后跑一遍预设测试确认 `local`/`vl` 归类正确(远程名单外的都进 local)。

@@ -61,6 +61,21 @@ class StrategyError(Exception):
     """Raised when no engine in the chain produced a usable result."""
 
 
+def _own_elapsed(inner: Any, image: Any) -> tuple:
+    """Time one engine call and return ``(result, elapsed_ms)``.
+
+    ``BestofEngine.recognise`` rewrites ``result.elapsed_ms`` with the total
+    wall clock after every engine has run, so ``bestof-fastest`` must be
+    scored on the figure captured *before* that rewrite. Without this helper
+    every candidate scored ``elapsed_ms=0`` and the mode resolved to a tie by
+    config order. A value the engine already set is kept as-is.
+    """
+    started = time.perf_counter()
+    result = inner.recognise(image)
+    own = getattr(result, "elapsed_ms", 0) or int((time.perf_counter() - started) * 1000)
+    return result, own
+
+
 class StrategyEngine:
     """Retry-driven engine chain.
 
@@ -92,6 +107,39 @@ class StrategyEngine:
             LOGGER.warning("retry predicate raised %s; accepting result", exc)
             return True
 
+    @staticmethod
+    def _metrics(result: OCRResult) -> Dict[str, Any]:
+        """Per-candidate numbers for the decision trace."""
+        regions = [r for r in result.regions if (r.text or "").strip()]
+        confs = [r.confidence for r in regions]
+        return {
+            "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
+            "region_count": len(result.regions),
+            "char_count": len(result.text or ""),
+            "garbled_layout": _is_garbled(result),
+        }
+
+    def _trace(self, reason: str, accepted: Dict[str, Any],
+               rejected: List[Dict[str, Any]], fallback: bool,
+               errors: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Shape the decision trace shared by the seq* / cascade* family.
+
+        ``accepted`` is the entry that won; ``rejected`` holds the candidates
+        the retry predicate refused, in the order they happened.
+        """
+        trace = {
+            "selected": accepted["engine"],
+            "reason": reason,
+            "engine_order": self.engines(),
+            "retries": self.retries,
+            "accepted": [accepted],
+            "rejected": rejected,
+            "fallback": fallback,
+        }
+        if errors:
+            trace["errors"] = errors
+        return trace
+
     def recognise(self, image: Any) -> OCRResult:
         """Run the engine chain and return the best result found."""
         if not self._engines:
@@ -99,18 +147,32 @@ class StrategyEngine:
 
         started = time.perf_counter()
         attempts: List[OCRResult] = []
+        rejected: List[Dict[str, Any]] = []
         last_error: Optional[Exception] = None
+        errors: List[Dict[str, Any]] = []
 
         for engine in self._engines:
             for attempt in range(self.retries + 1):
                 label = f"{engine.name} (attempt {attempt + 1}/{self.retries + 1})"
                 LOGGER.debug("strategy: trying %s", label)
                 try:
-                    result = engine.recognise(image)
+                    result, own = _own_elapsed(engine, image)
                 except Exception as exc:
                     last_error = exc
+                    errors.append(
+                        {"engine": engine.name,
+                         "error": f"{type(exc).__name__}: {exc}"}
+                    )
                     LOGGER.warning("strategy: %s failed: %s", label, exc)
                     continue
+                entry = {
+                    "engine": result.engine or engine.name,
+                    "model": result.model,
+                    "attempt": attempt + 1,
+                    "own_elapsed_ms": own,
+                    "ok": result.ok,
+                    **self._metrics(result),
+                }
                 attempts.append(result)
                 if self._acceptable(engine.config, result):
                     # Match BestofEngine's accounting: total wall-clock across
@@ -119,7 +181,14 @@ class StrategyEngine:
                     # strategy layer owns it. Without this line, seq-family
                     # presets reported elapsed_ms=0 in HTTP responses.
                     result.elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    result.score = entry["mean_confidence"]
+                    result.score_mode = "mean_confidence"
+                    result.decision = self._trace(
+                        "first_accepted", entry, rejected, False, errors,
+                    )
+                    result.decision["total_elapsed_ms"] = result.elapsed_ms
                     return result
+                rejected.append(entry)
                 if attempt < self.retries:
                     LOGGER.info("strategy: %s result rejected, retrying", label)
 
@@ -127,6 +196,18 @@ class StrategyEngine:
             best = max(attempts, key=lambda r: (r.ok, len(r.text or "")))
             if best.ok:
                 best.elapsed_ms = int((time.perf_counter() - started) * 1000)
+                best.score = self._metrics(best)["mean_confidence"]
+                best.score_mode = "mean_confidence"
+                # Every candidate was refused by the retry predicate; the
+                # best-effort result is the longest usable one. That is a
+                # different decision than a clean accept, so say so.
+                best.decision = self._trace(
+                    "all_rejected_fallback",
+                    {"engine": best.engine, "model": best.model, "attempt": 0,
+                     "own_elapsed_ms": 0, "ok": True, **self._metrics(best)},
+                    rejected, True, errors,
+                )
+                best.decision["total_elapsed_ms"] = best.elapsed_ms
                 return best
         if last_error is not None and not attempts:
             raise StrategyError(f"all engines failed: {last_error}") from last_error
@@ -186,6 +267,52 @@ def _text_parts(result: OCRResult) -> List[str]:
     ]
 
 
+_CJK_PUNCT = set("，。！？、；：""''（）《》…—""''·—")
+
+
+
+def _fluency_components(result: OCRResult) -> Dict[str, float]:
+    """Parts of :func:`_fluency_score`, laid out individually.
+
+    Returned as a dict so the decision trace can show *which* signal decided
+    the ranking, not just the total.
+    """
+    parts = _text_parts(result)
+    if not parts:
+        parts = [(result.text or "").strip()]
+    total_chars = sum(len(p) for p in parts)
+    if not result.ok or total_chars == 0:
+        return {
+            "phrase_bonus": 0.0,
+            "punct_bonus": 0.0,
+            "frag_penalty": 0.0,
+            "single_chars": 0,
+            "mean_phrase_len": 0.0,
+        }
+
+    # Mean phrase length: rewards longer coherent phrases (cap at 30 chars).
+    mean_phrase = total_chars / len(parts)
+    phrase_bonus = min(15.0, mean_phrase)
+
+    # Single-char fragment penalty: 166 single-char fragments would hit the cap.
+    single_chars = sum(1 for p in parts if len(p) == 1)
+    frag_penalty = min(_FLUENCY_SINGLE_CHAR_PENALTY * single_chars,
+                       _FLUENCY_SINGLE_CHAR_CAP)
+
+    # A few sentence markers is enough to earn the full punctuation bonus.
+    text = result.text or ""
+    punct_ratio = sum(1 for c in text if c in _CJK_PUNCT) / max(1, len(text))
+    punct_bonus = min(5.0, punct_ratio * 200.0)
+
+    return {
+        "phrase_bonus": round(phrase_bonus, 3),
+        "punct_bonus": round(punct_bonus, 3),
+        "frag_penalty": round(frag_penalty, 3),
+        "single_chars": single_chars,
+        "mean_phrase_len": round(mean_phrase, 2),
+    }
+
+
 def _fluency_score(result: OCRResult) -> float:
     """Semantic fluency: how much the output reads like natural language.
 
@@ -198,33 +325,10 @@ def _fluency_score(result: OCRResult) -> float:
     """
     if not result.ok:
         return float("-inf")
-    text = result.text or ""
-    if not text.strip():
+    if not (result.text or "").strip():
         return 0.0
-
-    parts = _text_parts(result)
-    if not parts:
-        parts = [text]
-
-    total_chars = sum(len(p) for p in parts)
-    if total_chars == 0:
-        return 0.0
-
-    # Mean phrase length: rewards longer coherent phrases (cap at 30 chars).
-    mean_phrase = total_chars / len(parts)
-    phrase_bonus = min(15.0, mean_phrase)
-
-    # Single-char fragment penalty: 166 single-char fragments would hit the cap.
-    single_chars = sum(1 for p in parts if len(p) == 1)
-    frag_penalty = min(_FLUENCY_SINGLE_CHAR_CAP,
-                       single_chars * _FLUENCY_SINGLE_CHAR_PENALTY)
-
-    # CJK punctuation: presence of sentence markers = reads like natural language.
-    _CJK_PUNCT = set("，。！？、；：""''（）《》…—""''·—")
-    punct_ratio = sum(1 for c in text if c in _CJK_PUNCT) / max(1, len(text))
-    punct_bonus = min(5.0, punct_ratio * 200.0)  # a few punct → up to 5 pts
-
-    return phrase_bonus + punct_bonus - frag_penalty
+    c = _fluency_components(result)
+    return c["phrase_bonus"] + c["punct_bonus"] - c["frag_penalty"]
 
 
 def _score_smart(result: OCRResult) -> float:
@@ -297,28 +401,53 @@ class BestofEngine:
         self._engines: List[Any] = list(engines)
         if not self._engines:
             raise StrategyError("bestof needs at least one engine")
-        self.score_fn = resolve_bestof_score(score_mode)
+        self.score_mode = (score_mode or "smart").strip().lower()
+        self.score_fn = resolve_bestof_score(self.score_mode)
 
     def engines(self) -> List[str]:
         return [e.name for e in self._engines]
 
     def recognise(self, image: Any) -> OCRResult:
         """Run every engine, pick the highest-scoring ``ok`` result."""
-        scored: List[tuple] = []
+        scored: List[Dict[str, Any]] = []
+        results: List[Any] = []
         last_error: Optional[Exception] = None
+        errors: List[Dict[str, Any]] = []
         started = time.perf_counter()
 
         for engine in self._engines:
             try:
-                result = engine.recognise(image)
+                result, own = _own_elapsed(engine, image)
             except Exception as exc:
                 last_error = exc
+                errors.append(
+                    {"engine": engine.name,
+                     "error": f"{type(exc).__name__}: {exc}"}
+                )
                 LOGGER.warning("bestof: %s failed: %s", engine.name, exc)
                 continue
-            s = self.score_fn(result)
-            scored.append((s, result))
+            results.append(result)
+            # During scoring this is the engine's *own* latency, which is what
+            # _score_fastest reads. The winner gets overwritten with the total
+            # wall clock below; the per-engine figure survives in the trace.
+            result.elapsed_ms = own
+            metrics = self._metrics(result)
+            score = self.score_fn(result)
+            scored.append({
+                "engine": result.engine or engine.name,
+                "model": result.model,
+                "own_elapsed_ms": own,
+                "ok": result.ok,
+                "score": round(score, 4),
+                "mean_confidence": metrics["mean_confidence"],
+                "region_count": metrics["region_count"],
+                "char_count": metrics["char_count"],
+                "garbled_layout": metrics["garbled_layout"],
+                "detail": self._score_detail(result, score),
+            })
             LOGGER.debug(
-                "bestof: %s -> score=%.2f ok=%s", engine.name, s, result.ok
+                "bestof: %s -> score=%.2f ok=%s",
+                result.engine or engine.name, score, result.ok,
             )
 
         if not scored:
@@ -327,20 +456,70 @@ class BestofEngine:
                 + (f": {last_error}" if last_error else "")
             ) from (last_error if last_error else None)
 
-        # prefer highest score, breaking ties by engine order (already inserted)
-        scored.sort(key=lambda kv: kv[0], reverse=True)
-        winner = scored[0][1]
-        # Match StrategyEngine's accounting: total elapsed_ms across all
-        # wrapped engines. Engines don't set it themselves; only the
-        # Strategy / Bestof layer does. Without this line, bestof responses
-        # reported elapsed_ms=0.
-        winner.elapsed_ms = int((time.perf_counter() - started) * 1000)
-        if not winner.ok:
+        # Highest score wins; an ``ok`` result beats a good score on an empty
+        # one. Ties keep config order (sorted is stable).
+        ranked = sorted(zip(scored, results), key=lambda p: p[0]["score"],
+                        reverse=True)
+        picked = next((p for p in ranked if p[1].ok), None)
+        if picked is None:
             raise StrategyError(
                 f"bestof exhausted {len(self._engines)} engine(s), "
                 f"{len(scored)} result(s), none ok"
             )
+        winner = picked[1]
+        # Total wall clock across every wrapped engine, mirroring
+        # StrategyEngine. Engines do not set elapsed_ms themselves.
+        winner.elapsed_ms = int((time.perf_counter() - started) * 1000)
+        winner.score = picked[0]["score"]
+        winner.score_mode = self.score_mode
+        winner.decision = {
+            "selected": winner.engine,
+            "reason": f"highest_{self.score_mode}_score",
+            "score_mode": self.score_mode,
+            "engine_order": self.engines(),
+            "ranked": [c for c, _ in ranked],
+            "total_elapsed_ms": winner.elapsed_ms,
+        }
+        if errors:
+            winner.decision["errors"] = errors
         return winner
+
+    def _metrics(self, result: OCRResult) -> Dict[str, Any]:
+        """Per-candidate numbers, shared with :class:`StrategyEngine`."""
+        regions = [r for r in result.regions if (r.text or "").strip()]
+        confs = [r.confidence for r in regions]
+        return {
+            "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
+            "region_count": len(result.regions),
+            "char_count": len(result.text or ""),
+            "garbled_layout": _is_garbled(result),
+        }
+
+    def _score_detail(self, result: OCRResult, score: float) -> Dict[str, Any]:
+        """Break the score down so the ranking is auditable.
+
+        Only the components the active mode actually uses are reported — a
+        ``fastest`` trace should not carry fluency numbers it never read.
+        """
+        mode = self.score_mode
+        if not result.ok:
+            return {"excluded": "not_ok"}
+        if mode == "smart":
+            return {
+                "confidence_pts": round(_mean_confidence(result) * 100.0, 3),
+                "garbled_penalty": -_GARBLED_PENALTY if _is_garbled(result) else 0.0,
+                "length_nudge": round(min(1.0, len(result.text or "")), 3),
+                **_fluency_components(result),
+            }
+        if mode == "fluency":
+            return _fluency_components(result)
+        if mode == "highest_confidence":
+            return {"mean_confidence": round(_mean_confidence(result), 4)}
+        if mode == "longest":
+            return {"char_count": len(result.text or "")}
+        if mode == "fastest":
+            return {"own_elapsed_ms": getattr(result, "elapsed_ms", 0)}
+        return {"score": round(score, 4)}
 
     def summary(self) -> Dict[str, Any]:
         return {

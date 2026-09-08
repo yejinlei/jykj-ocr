@@ -190,6 +190,13 @@ class OCRResult(_PydanticBase):
     width: int = 0
     height: int = 0
 
+    # Which engine won and why — filled by the strategy layer (StrategyEngine /
+    # BestofEngine). `engine` alone does not say whether an entry was reached
+    # first, was rejected then replaced, or won a bestof comparison.
+    score: Optional[float] = None
+    score_mode: str = ""
+    decision: Optional[Dict[str, Any]] = None
+
     @property
     def ok(self) -> bool:
         """True when recognition produced any usable text."""
@@ -205,6 +212,9 @@ class OCRResult(_PydanticBase):
             "height": self.height,
             "region_count": len(self.regions),
             "regions": [r.as_dict() for r in self.regions],
+            "score": self.score,
+            "score_mode": self.score_mode,
+            "decision": self.decision,
         }
 
     def to_markdown(self) -> str:

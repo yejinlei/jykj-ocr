@@ -220,13 +220,14 @@ python -m jykj_ocr serve --port 8000</code>
       <li>rapidocr 166 区域,置信度 0.97+,离线可用</li>
       <li>multimodal 在硅基流动(带厂商前缀模型 ID)与模力方舟(裸模型 ID)两个平台上均返回完整全文</li>
       <li>七类命名预设(local/vl/seq*/cascade*/bestof*)在 http://192.168.0.81:8000 实测通过,未知名称返回 400 并列出可选值</li>
-      <li><code>GET /presets</code> 返回全部 17 个预设 + <code>bestof:&lt;mode&gt;</code> 别名,含评分模式/重试判定/引擎范围/最大重试次数</li>
+      <li><code>GET /presets</code> 返回 17 个命名预设 + <code>bestof:&lt;mode&gt;</code> 别名(共 18 项),含评分模式/重试判定/引擎范围/最大重试次数</li>
       <li><code>/docs</code> 全部 10 个操作按"OCR 识别"/"配置与状态"两组分类展示</li>
       <li>便捷路由 <code>/ocr/{preset}</code> / <code>/ocr/{preset}/text</code>(路由即策略)已上线,新引擎/新预设无需改路由</li>
-      <li><code>/ocr/{preset}</code> 支持 <code>retry_mode</code> / <code>score_mode</code> / <code>max_retries</code> 三旋钮,单次请求覆盖预设默认</li>
+      <li><code>/ocr/{preset}</code> 的路由本身就是策略,不再暴露 <code>retry_mode</code> / <code>score_mode</code> / <code>max_retries</code>(传了会被忽略,不报错);这三个旋钮只在 <code>/ocr</code> 与 <code>/ocr/text</code> 上存在</li>
+      <li><code>GET /docs?preset=_local</code> 打开的 Swagger 按预设灰化无关字段——本地预设把 <code>model</code> / <code>base_url</code> / <code>api_key</code> / <code>prompt</code> 标为 <code>readOnly</code>,Swagger UI 直接不渲染这四个输入框;在预设输入框里改名即原地重渲染,不丢展开状态</li>
       <li><code>cascade*</code> 家族:被 reject 的尝试立刻降级下一引擎,不重试同一引擎</li>
       <li>所有引擎统一走 <code>BaseEngine.recognise</code> 的墙钟超时(rapidocr 与远程),默认 120s,可用 <code>EngineConfig.timeout</code> 覆盖,<code>timeout&lt;=0</code> 关闭</li>
-      <li><code>pytest</code> 离线测试基线 237 passed</li>
+      <li><code>pytest</code> 离线测试基线 307 passed</li>
       <li>真实模型 E2E <code>scripts/real_model_e2e.py</code>:34 项全部通过(16 个接口 + 18 个策略预设,~436s),模力方舟 <code>https://api.moark.com/v1</code> 的 <code>PaddleOCR-VL-1.5</code> 与 <code>Qwen3-VL-30B-A3B-Instruct</code> 在线实测</li>
       <li>该轮 E2E 抓到并修复:<code>image_data</code> 双前缀缺陷(文档写「完整 data URI」,实现又加一层 <code>data:</code>),已加 5 个回归用例</li>
       <li>GET /config 实测 <code>key_leaked=False</code></li>

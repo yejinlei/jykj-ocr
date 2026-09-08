@@ -112,6 +112,12 @@ VALID_SCORE_MODES = frozenset(
 #: ``max_retries=None`` means "leave the configured value alone" — this is
 #: what ``seq*`` / ``bestof*`` presets do. An explicit integer overrides the
 #: config value; ``cascade*`` uses ``0`` to skip same-engine retries.
+#:
+#: Keys are the *public* preset spellings (``seq``, not ``_seq``). Configs,
+#: ``strategy_name``, and the CLI all type them bare. The ``/ocr/{preset}``
+#: route accepts an optional leading ``_`` as an explicit "this is a preset,
+#: not an engine" marker, and strips it before calling
+#: :func:`apply_strategy_preset` — see ``server._resolve_preset_route``.
 _SEQ_PRESETS = {
     "local": ("no_text", False, False, None, None),
     "vl": ("no_text", False, False, None, None),
@@ -252,6 +258,9 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
       - ``bestof*``  every engine runs once (:class:`BestofEngine`); the winner
                      is picked by a score function; never re-ordered
 
+    A leading ``_`` is tolerated and dropped (``_seq`` ≡ ``seq``) — the
+    ``/ocr/{preset}`` route uses it as an explicit "preset, not engine" marker.
+
     ``name`` is written into ``strategy["name"]`` so downstream code (text
     reorder, pipeline assembly) can see which preset produced this config.
     Unknown names raise ``ValueError`` listing the valid presets.
@@ -262,7 +271,12 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
     config gives it. Mark a new remote-only vendor by adding its name to
     ``JYKJ_OCR_REMOTE_ENGINES``.
     """
-    key = (name or "").strip().lower()
+    key = (name or "").strip()
+    # Accept the ``_`` prefix too: the ``/ocr/{preset}`` route lets a caller
+    # mark a value as "preset, not engine", and strips it before landing here
+    # — but tolerate it directly so a hand-written preset name is portable.
+    if key.startswith("_"):
+        key = key[1:]
     # ``bestof:<mode>`` syntax — validate the mode before looking up the preset.
     bestof_score_mode = None
     if key.startswith("bestof:"):
@@ -280,7 +294,7 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
         bestof_score_mode = mode
         key = "bestof"
 
-    if key not in STRATEGY_PRESETS:
+    if key not in _SEQ_PRESETS:
         raise ValueError(
             f"unknown strategy {name!r}; choose one of {', '.join(STRATEGY_PRESETS)}"
         )
@@ -326,10 +340,11 @@ def apply_strategy_preset(config: Config, name: str) -> Config:
     # Write max_retries when the preset dictates a specific value (e.g.
     # ``cascade*`` = 0). Presets that leave it alone use ``None`` and keep
     # whatever the config already had — this is how ``seq*`` retains its
-    # configured retries.
+    # configured retries. Only bestof drops it: that family has no retry
+    # predicate, so a stale value would just mislead the trace.
     if preset_max_retries is not None:
         strategy["max_retries"] = preset_max_retries
-    else:
+    elif is_bestof:
         strategy.pop("max_retries", None)
 
     # Bestof presets mark themselves so build_pipeline knows to assemble a
