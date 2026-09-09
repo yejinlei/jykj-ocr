@@ -231,7 +231,9 @@ python -m jykj_ocr serve --port 8000</code>
       <li><code>cascade*</code> 家族:被 reject 的尝试立刻降级下一引擎,不重试同一引擎</li>
       <li>所有引擎统一走 <code>BaseEngine.recognise</code> 的墙钟超时(rapidocr 与远程),默认 120s,可用 <code>EngineConfig.timeout</code> 覆盖,<code>timeout&lt;=0</code> 关闭</li>
       <li><code>pytest</code> 离线测试基线 342 passed</li>
-      <li>真实模型 E2E <code>scripts/real_model_e2e.py</code>:34 项全部通过(16 个接口 + 18 个策略预设,~436s),模力方舟 <code>https://api.moark.com/v1</code> 的 <code>PaddleOCR-VL-1.5</code> 与 <code>Qwen3-VL-30B-A3B-Instruct</code> 在线实测</li>
+      <li>真实模型 E2E <code>scripts/real_model_e2e.py</code>:35 项(17 个接口 + 18 个策略预设)。打本机服务时两条 <code>image_url</code> 用例照常通过;打远端部署 33 通过 + 2 SKIP(~1410s)。模力方舟 <code>https://api.moark.com/v1</code> 的 <code>PaddleOCR-VL-1.5</code> 与 <code>Qwen3-VL-30B-A3B-Instruct</code> 在线实测</li>
+      <li>打远端部署时 <code>image_url</code> 用例 SKIP 而非 FAIL:<code>image_url</code> 由服务端解析(网络 URL 服务端自己下载,本地路径要在服务器文件系统上存在),REST 客户端无法假定服务器上有测试图片;远端跑请用 <code>JYKJ_OCR_REMOTE_IMAGE_URL</code> 指定服务端可达的 URL。<code>GET /config</code> 的「不泄露 key」在本机无 key 时改判返回结构(无任何 key 类字段 + 远程引擎 <code>has_api_key=true</code> + 离线引擎全 <code>false</code>),不再因派生不出泄露片段而误报</li>
+      <li><code>image_url</code> 指向服务端不存在的文件 → 400 <code>{"detail":"input not found: ..."}</code>(0.0s fail-fast,与部署拓扑无关)</li>
       <li>该轮 E2E 抓到并修复:<code>image_data</code> 双前缀缺陷(文档写「完整 data URI」,实现又加一层 <code>data:</code>),已加 5 个回归用例</li>
       <li>GET /config 实测 <code>key_leaked=False</code></li>
     </ul>

@@ -358,14 +358,24 @@ flowchart TB
 export OPENAI_API_KEY=***  OPENAI_BASE_URL=https://api.siliconflow.cn/v1
 .venv/Scripts/python scripts/demo.py --ci
 
-# 接口 + 全部策略预设的真实模型回归(34 项,约 7 分钟)
+# 接口 + 全部策略预设的真实模型回归(35 项,约 7-24 分钟)
 # 打全部 10 个 HTTP 端点 + 18 个策略预设,结果写 real_model_e2e_result.json(已 gitignore)
 JYKJ_OCR_PORT=8010 .venv/Scripts/python -m jykj_ocr serve &
 .venv/Scripts/python scripts/real_model_e2e.py http://127.0.0.1:8010 tests/兰亭序.jpeg
-# 退出码 = 失败项数
+# 退出码 = 失败项数(SKIP 不计入)
 ```
 
-`real_model_e2e.py` 的实测结论见「引擎实测状态」章节:该轮 34/34 通过,并抓到一个
+**打远端部署时会有 2 个 SKIP,不是缺陷**:`image_url` 由**服务端**解析——
+`http(s)://` 开头时服务端自己下载,否则在**服务器**文件系统上按路径找。所以 REST
+客户端没法假定服务器上有测试图片。脚本按拓扑分支(`_server_resolvable_url`):打
+localhost/127.0.0.1 时传本机路径;打远端时返回空串,两条 `image_url` 用例标
+**SKIP** 而不是 FAIL。要让远端也真跑,设 `JYKJ_OCR_REMOTE_IMAGE_URL` 指向服务端可达的
+网络 URL(本服务不托管静态文件,拼 `<base>/<仓库相对路径>` 不通)。
+2026-09-09 打 `http://192.168.0.81:8000`(源码部署,3 引擎)实测
+**33 通过 / 2 SKIP / 0 失败**,~1410s;该部署外网出口受限,服务端确实发起过下载但拿到
+读超时 / SSL 握手超时 / 远端 HTTP 400,所以网络 URL 也不能当稳定输入源。
+
+`real_model_e2e.py` 的实测结论见「引擎实测状态」章节:该轮 34 项版本 34/34 通过,并抓到一个
 离线测试覆盖不到的契约缺陷 —— `image_data` 字段文档写「完整 data URI」,实现却
 无条件再加一层 `data:` 前缀,导致合法输入被 400 拒绝。
 

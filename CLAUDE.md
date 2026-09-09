@@ -202,14 +202,17 @@ docker compose up -d
   (`base_url: https://api.siliconflow.cn/v1` + `model: PaddlePaddle/PaddleOCR-VL-1.5`),
   不是引擎类型。
 
-### 真实模型 E2E(`scripts/real_model_e2e.py`,34 项全部通过,~436s)
+### 真实模型 E2E(`scripts/real_model_e2e.py`,17 接口 + 18 策略 = 35 项)
 
+打本机服务时两条 `image_url` 用例照常通过;打远端部署时它们 SKIP,
+2026-09-09 实测 **33 通过 / 2 SKIP / 0 失败**(见下「打远端部署时的 2 个 SKIP」)。
 凭据走**通用** `OPENAI_API_KEY`/`OPENAI_BASE_URL` 一对,当前指向模力方舟
-`https://api.moark.com/v1`(裸模型 ID,不带厂商前缀)。34/34 通过:
+`https://api.moark.com/v1`(裸模型 ID,不带厂商前缀)。该轮(本机部署,34 项版本)34/34 通过:
 
-- **接口**(16 项):`/health` `/engines` `/presets`(18 项)/`/config` GET/POST/DELETE
+- **接口**(17 项):`/health` `/engines` `/presets`(18 项)/`/config` GET/POST/DELETE
   (`key_leaked=False`)/`/ocr`(multipart)/`/ocr/text`(image_url / image_b64 / image_data
-  三选一)/`/ocr/{preset}` `/ocr/{preset}/text`/`format=text` 与 `format=markdown`
+  三选一 + image_url 指向服务端不存在的文件→400)/`/ocr/{preset}`
+  `/ocr/{preset}/text`/`format=text` 与 `format=markdown`
   返回 `text/plain`(不是 JSON 信封)/缺 file→422/未知预设→400。
 - **策略**(18 项):local/vl/seq*/cascade*/bestof* 全部、`bestof:<mode>` 冒号别名、
   `fallback`/`quality` legacy 别名。实测结果与预期一致:
@@ -222,6 +225,32 @@ docker compose up -d
 - 该轮抓到的缺陷:`TextRequest.image_data` 文档写「完整 data URI」,实现却无条件再加
   一层 `data:` 前缀,合法输入被 400 拒绝。已修复(前缀存在则原样透传),
   并加 `TestTextRequestSourceResolution` 5 个回归用例。
+
+#### 打远端部署时的 2 个 SKIP(不是产品缺陷)
+
+`image_url` 由**服务端**解析:`http(s)://` 开头服务端自己下载,否则在**服务器**文件系统
+上按路径找。因此 REST 客户端无法假定服务器上有测试图片,脚本按拓扑分支
+(`_server_resolvable_url`):
+
+- **本机打本机**(base host 是 localhost/127.0.0.1)→ 传脚本手里的本地路径,正常 PASS。
+- **本机打远端**(如 `http://192.168.0.81:8000`)→ 返回空串,两条 `image_url` 用例
+  标 **SKIP** 而非 FAIL;要跑就设 `JYKJ_OCR_REMOTE_IMAGE_URL` 指向服务端可达的网络 URL
+  (本服务不托管静态文件,拼 `<base>/<仓库相对路径>` 是不通的)。
+
+`GET /config (不泄露 key)` 在远端跑时本机拿不到 key、派生不出泄露片段,原先靠
+`bool(frags)` 判 FAIL。现改为双判定:本机有 key 时查明文片段是否出现;没有时用
+`_structural_leak_signals()` 查返回结构——①无任何承载明文的字段(按字段名逐个比对,
+不能子串匹配,`has_api_key` 本身含 `api_key`,子串判断会把正确脱敏的响应误报成泄露)、
+②远程引擎报 `has_api_key=true`、③离线引擎一律 `false`。三条成立即结构上已脱敏。
+
+新增一项与部署拓扑无关的负向用例:`image_url` 指向服务端不存在的文件 → 400
+`{"detail":"input not found: ..."}`(0.0s fail-fast,输入解析阶段就拒)。
+
+2026-09-09 远端实测:`http://192.168.0.81:8000`(源码部署,3 引擎 = rapidocr + 2 条
+硅基流动 multimodal,`PaddlePaddle/PaddleOCR-VL-1.5` 与 `moonshotai/Kimi-K2.7-Code`),
+**35 项:33 通过 / 2 SKIP / 0 失败**,~1410s。该部署的外网出口受限——
+`image_url` 传公开图片 URL 时服务端确实发起了下载,但拿到的是读超时 / SSL 握手超时 /
+远端 HTTP 400,所以网络 URL 用例也不能当稳定输入源,这正是要 SKIP 而不是硬编造一个 URL。
 
 ## 维护提示
 

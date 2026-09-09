@@ -286,7 +286,7 @@ export OPENAI_API_KEY=...  OPENAI_BASE_URL=https://api.siliconflow.cn/v1
 .venv/Scripts/python scripts/demo.py --ci                    # 全场景演示
 JYKJ_OCR_PORT=8010 .venv/Scripts/python -m jykj_ocr serve &  # 起服务
 .venv/Scripts/python scripts/real_model_e2e.py \
-    http://127.0.0.1:8010 tests/兰亭序.jpeg                   # 34 项,约 7 分钟
+    http://127.0.0.1:8010 tests/兰亭序.jpeg                   # 35 项,约 7 分钟
 ```
 
 另有一轮硅基流动实测(`https://api.siliconflow.cn/v1`,模型
