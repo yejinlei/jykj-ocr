@@ -1244,28 +1244,34 @@ flowchart LR
 
 ## 9. 策略预设
 
-### 9.1 两种策略模型总览
+### 9.1 策略模型总览
 
-jykj_ocr 提供**两类**策略,解决不同场景:
+jykj_ocr 提供**三个**策略家族(底层只有两个引擎:顺序与级联共用 `StrategyEngine`,
+最佳走 `BestofEngine`),解决不同场景:
 
 | 策略家族 | 引擎调用方式 | 何时选它 |
 |----------|--------------|----------|
 | **顺序预设**(`local`/`vl`/`seq*`/`fallback`/`quality`) | 按 `config.engines` 顺序一个接一个尝试,**第一个命中即返回**;不通过再试下一个 | 日常生产:引擎 A 能用就用 A,失败才降级到 B——快,省钱 |
+| **级联预设**(`cascade*`) | 与 `seq*` **同一个** `StrategyEngine`,唯一区别 `max_retries=0`——被 reject 的尝试立刻降级下一引擎,不重扫同一张 | 本地明显不行时(如盖章窜行)不值得重试:直接把时间省给远程 |
 | **最佳预设**(`bestof`/`bestof-*`) | **所有引擎各跑一次**,按评分函数挑得分最高的那一个 | 对质量要求极高:不在乎多花几倍时间,只要结果最好 |
 
 ```mermaid
 flowchart LR
     A["jykj_ocr.ocr(source, ...)"] --> S{"strategy_name"}
 
-    S -->|local / vl / seq / seq-*<br/>fallback / quality| SEQ["策略引擎 StrategyEngine<br/>按序尝试 + 重试"]
+    S -->|local / vl / seq / seq-*<br/>fallback / quality| SEQ["策略引擎 StrategyEngine<br/>按序尝试 + 重试<br/>max_retries&gt;=1"]
+    S -->|cascade / cascade-*| CAS["策略引擎 StrategyEngine<br/>按序尝试,不重试<br/>max_retries=0"]
     S -->|bestof / bestof-*<br/>bestof:&lt;mode&gt;| BEST["择优引擎 BestofEngine<br/>所有引擎各跑一次"]
 
     SEQ -->|1 个命中| RESULT["返回结果"]
+    CAS -->|1 个命中| RESULT
     BEST -->|N 个候选 → 评分 → 取最高| RESULT
 
     classDef seq fill:#e8f1ff,stroke:#1565c0
+    classDef cas fill:#e0f2f1,stroke:#00695c
     classDef best fill:#f3e5f5,stroke:#6a1b9a
     class SEQ seq
+    class CAS cas
     class BEST best
 ```
 
@@ -1300,11 +1306,27 @@ GET /presets
 - `strategy.bestof_mode` 旋钮单独出现(没有预设名)——同样走 `build_pipeline` 里的
   同一条检查,结果一致
 
-### 9.2 顺序预设(`seq*`,走 `StrategyEngine`)
+### 9.2 顺序与级联预设(`seq*` / `cascade*`,走 `StrategyEngine`)
 
 **工作机制**:引擎按 `config.engines` 数组顺序排列,从第一个开始 `recognise()`;
 结果通过 `retry_check` 谓词(见 §9.4)判定是否合格——合格即返回,不合格才切换下一个。
 每个引擎最多重试 `max_retries` 次。
+
+`cascade*` 与 `seq*` **共用同一个 `StrategyEngine`**,唯一区别是 `max_retries=0`:
+被 reject 的尝试立刻降级到下一个引擎,不重试同一引擎。本地 OCR 对同一张图
+重跑不会变好(盖章窜行再扫一遍还是窜行),这时用 `cascade*` 省下重复开销。
+
+**建议的引擎顺序**(对预设效果影响最大,建议放错就白等):
+
+1. **`rapidocr` 放第一位** —— 离线、零凭据、~10s 一页。它命中时成本是 0。
+2. **第二条远程放快模型** —— `PaddlePaddle/PaddleOCR-VL-1.5`(3~5s)。作为
+   第一层降级,让降级路径也不慢。
+3. **第三条远程放慢模型** —— `Qwen/Qwen3-VL-30B-A3B-Instruct`(自动分段、
+   文本整理最佳,~12s)或 `Qwen/Qwen3-VL-8B-Instruct`(省 token 兜底)。
+4. **别放代码/对话 Agent 模型**(`Kimi-K2.7-Code`、`GLM-4.5V` 一类)当常规条目 ——
+   实测 140s+ 且带幻觉前缀,会把整条链拖到超时。见 §9.8。
+5. **本地引擎放最前**,远程按「快→慢」排。顺序反过来(rapidocr 在最后)时
+   `seq` 会先去打远程,慢一个数量级。
 
 ```mermaid
 flowchart TD
@@ -1333,16 +1355,35 @@ flowchart TD
 
 **各预设细节**:
 
-| 预设 | 引擎范围 | retry_mode | 阅读顺序重排 | 适用场景 |
-|------|----------|:----:|:---:|----------|
-| `local` | 仅本地(rapidocr 家族) | `no_text` | — | 离线、隐私敏感、批量低成本 |
-| `vl` | 仅 1 条远程 VL 大模型(config 里第一条已启用的) | `no_text` | — | 版面复杂、手写、表格 |
-| `seq` | 全部启用引擎 | `no_text` | — | 通用生产链路(**默认**) |
-| `seq-any` | 同 seq + 窜行降级 | `any`(低置信度或窜行任一) | ✅ | 盖章/倾斜导致 rapidocr 窜行 |
-| `seq-low_conf` | 全部启用引擎 | `low_confidence` | — | 低置信度自动降级 |
-| `seq-line_overlap` | 全部启用引擎 | `line_overlap` | — | 窜行时自动降级 |
-| `fallback` | 同 seq | `no_text` | — | legacy 别名(回退链) |
-| `quality` | 同 seq-any | `any`(低置信度或窜行任一) | ✅ | legacy 别名(窜行降级+重排) |
+| 预设 | 引擎范围 | retry_mode | 重排 | 建议模型 / 场景 |
+|------|----------|:---:|:---:|-----------------|
+| `local` | 仅本地(rapidocr 家族) | `no_text` | — | 只能有 rapidocr。**离线/隐私/批量化**:涉密文件、内网无出口、一次上千页 |
+| `vl` | 仅 1 条远程 VL(第一条已启用的) | `no_text` | — | 建议 `PaddlePaddle/PaddleOCR-VL-1.5` 或 `Qwen3-VL-30B`。**本地必然烂的图**:手写、盖章、拍照倾斜、表格 |
+| `seq` | 全部启用引擎 | `no_text` | — | rapidocr → 快 VL。**通用生产默认**:大多数图本地够用,偶尔才降级 |
+| `seq-any` | 同 seq + 窜行降级 | `any` | ✅ | 同 `seq`,但多一层保险。**盖章、倾斜、双栏**导致 rapidocr 窜行 |
+| `seq-low_conf` | 全部启用引擎 | `low_confidence` | — | 同 `seq`,阈值默认 **0.7**。**对准确率敏感**:模糊、低对比度、小字 |
+| `seq-line_overlap` | 全部启用引擎 | `line_overlap` | — | 同 `seq`,只看窜行。**只关心版面顺序**,不在乎置信度 |
+| `cascade` | 同 seq | `no_text` | — | 同 seq,**但 `max_retries=0`**:被 reject 立刻换引擎,不重扫同一张 |
+| `cascade-low_conf` | 同 seq | `low_confidence` | — | 同上 |
+| `cascade-line_overlap` | 同 seq | `line_overlap` | — | 同上。**快速兜底链**:本地窜行就立刻上远程,不浪费一次重跑 |
+| `fallback` | 同 `seq` | `no_text` | — | legacy 别名,行为等同 `seq` |
+| `quality` | 同 `seq-any` | `any` | ✅ | legacy 别名,行为等同 `seq-any`(窜行降级 + 重排) |
+
+> `cascade*` 与对应 `seq*` 的差别只在 `max_retries`。retry_mode 完全相同(见
+> `GET /presets` 的 `retry_mode` 字段),所以**选谁看的是"重试有没有用"**,不是
+> "判定标准"。
+
+**`seq` vs `cascade` 怎么选**:同一条引擎链,区别只是被 reject 后要不要
+重跑同一个引擎。
+
+- **选 `seq*`**:结果可能受网络抖动或限流影响 —— 远程 VL 偶尔返回空,重试
+  一次大概率就好。
+- **选 `cascade*`**:结果取决于图片本身 —— 盖章导致 rapidocr 窜行,再扫一遍
+  还是窜行;这时重试只是浪费 ~10s。本次实测 `cascade-line_overlap` 11.0s
+  完成,`seq-line_overlap` 20.4s(差出的 ~9s 就是一次 rapidocr 重跑)。
+
+**引擎个数下限**:`seq*` / `cascade*` 要求 ≥2 个已启用引擎,不足返回 422
+并列出实际启用的引擎名(见 §9.1.1)。`local` / `vl` 豁免。
 
 **示例**:
 
@@ -1365,6 +1406,30 @@ curl -s http://localhost:8000/ocr/vl \
 
 **阅读顺序重排**(仅 `seq-any`/`quality` 开启):当检测到窜行时,`rebuild_text_from_regions()`
 按 bbox 的 `y1` 升序、同行内按 `x1` 升序重排所有 `TextRegion`,让输出"读起来像人话"。
+
+**`seq*` 与 `cascade*` 的差别(同一套判定,只差重试)**:
+
+```mermaid
+flowchart TD
+    subgraph SEQ["seq-line_overlap (max_retries=1)"]
+        S1["rapidocr"] --> C1{"窜行?"}
+        C1 -->|是| S1R["重试同一引擎"]
+        S1R --> C1
+        C1 -->|仍窜行| S2["multimodal"]
+    end
+    subgraph CASCADE["cascade-line_overlap (max_retries=0)"]
+        C21["rapidocr"] --> C2{"窜行?"}
+        C2 -->|是| C22["multimodal"]
+    end
+    S2 --> R["返回远程结果"]
+    C22 --> R
+
+    classDef slow fill:#ffebee,stroke:#c62828
+    classDef fast fill:#e8f5e9,stroke:#2e7d32
+    class S1R,C1 slow
+    class C2,C22 fast
+```
+
 
 ### 9.3 最佳预设(`bestof*`,走 `BestofEngine`)
 
@@ -1405,14 +1470,26 @@ flowchart TD
 
 **各评分模式详解**:
 
-| 预设 | 评分函数 | 得分公式 | 适用场景 |
-|------|----------|----------|----------|
-| `bestof` / `bestof-smart` | **综合最优**(**推荐**) | `置信度 × 100 − 窜行惩罚 20 + 文本长度上限 1 + 语义流畅度` | 通用质量最优,自动规避碎片化输出 |
-| `bestof-fastest` | 最快 | `−elapsed_ms`(数值越小越好) | 追求速度 |
-| `bestof-confidence` | 置信度最高 | `mean(confidence)` | 追求每字准确 |
-| `bestof-longest` | 文本最长 | `len(text)` | 追求完整性,不漏字 |
-| `bestof-fluency` | 语义流畅度 | `短语密度 + CJK 标点 − 单字碎片惩罚` | 追求"读起来像人话" |
+| 预设 | 评分函数 | 得分公式 | 建议模型 / 场景 |
+|------|----------|----------|-----------------|
+| `bestof` / `bestof-smart` | **综合最优**(**推荐**) | `置信度 × 100 − 窜行惩罚 20 + 文本长度上限 1 + 语义流畅度` | rapidocr + 快 VL。**通用质量最优**,自动规避碎片化输出 |
+| `bestof-fastest` | 最快 | `−elapsed_ms`(数值越小越好) | **注意**:比的是各引擎**耗时**,不是配置顺序。远程抖动时赢家会变(见下方警告) |
+| `bestof-confidence` | 置信度最高 | `mean(confidence)` | 建议 rapidocr 做对照。**逐字准确**,适合需要原文精确核对的场景 |
+| `bestof-longest` | 文本最长 | `len(text)` | **陷阱**:碎片化输出也可能很长。要"不漏字"请配 `smart`,不要单独用这个 |
+| `bestof-fluency` | 语义流畅度 | `短语密度 + CJK 标点 − 单字碎片惩罚` | 建议 `Qwen3-VL-30B`(自动分段)。**追求"读起来像人话"**,适合要直接给人读的文本 |
 | `bestof:<mode>` | 同上任意 mode | 等价于 `bestof-mode` | 冒号语法别名 |
+
+> **成本警告**:`BestofEngine` 是**串行**的(同步 for-loop,不并发),3 个引擎
+> 的最坏耗时 = 3 × `timeout`。配置里远程 `timeout: 180` 时,一次 `bestof*`
+> 调用最坏要等 ~9 分钟。本次实测 3 个候选全部完成、无超时,耗时
+> 110s / 121s / 154s;个别轮次 Kimi 撞上 180s 超时,那条进 `decision.errors`
+> 而不是让整次调用 502,其余候选仍正常打分——但**你少了一个候选**。
+> 把慢模型(代码/对话 Agent 类)放在 bestof 链里,代价是每次调用都多等它。
+
+> **`bestof-fastest` 的赢家会变**。它比的是各引擎本次 `elapsed_ms`,而远程
+> 模型耗时抖动很大:本次实测 `PaddleOCR-VL-1.5` 在 1.9s / 3.3s / 5.3s 之间
+> 波动,`rapidocr` 稳定在 ~9.7s。某次远程恰好比本地快,赢家就从 rapidocr 变成
+> 远程。想要稳定走本地,请用 `local` 预设,不要指望 `bestof-fastest`。
 
 **智能评分 `smart` 打分拆解**:
 
@@ -1555,6 +1632,7 @@ export JYKJ_OCR_REMOTE_ENGINES="paddlecloud,acme-vl"   # 逗号分隔,小写
 | 通用生产(seq,默认) | `ocr img.png` | `POST /ocr -F file=@img.png` | — | `ocr("img.png")` |
 | 仅本地引擎 | `ocr --strategy-name local` | `POST /ocr/local -F file=@img.png` | — | `ocr("img.png", strategy_name="local")` |
 | 窜行降级+重排(quality) | `ocr --strategy-name quality` | `POST /ocr/quality -F file=@img.png` | — | `ocr("img.png", strategy_name="quality")` |
+| 级联:窜行直接上远程 | `ocr --strategy-name cascade-line_overlap` | `POST /ocr/cascade-line_overlap -F file=@img.png` | — | `ocr("img.png", strategy_name="cascade-line_overlap")` |
 | 多引擎择优(smart) | `ocr --strategy-name bestof` | `POST /ocr/bestof -F file=@img.png` | — | `ocr("img.png", strategy_name="bestof")` |
 | 按置信度择优 | `ocr --strategy-name bestof-confidence` | `POST /ocr/bestof-confidence -F file=@img.png` | — | `ocr("img.png", strategy_name="bestof-confidence")` |
 | 冒号语法别名 | — | `POST /ocr/bestof:fluency -F file=@img.png` | `POST /ocr/bestof:fluency/text` | `ocr("img.png", strategy_name="bestof:fluency")` |
@@ -1570,7 +1648,7 @@ export JYKJ_OCR_REMOTE_ENGINES="paddlecloud,acme-vl"   # 逗号分隔,小写
 
 **路由即策略**:所有 `/ocr/{preset}` 路径自动识别 preset——
 - preset 匹配已注册引擎名(`rapidocr`/`multimodal`):等价于强制单引擎
-- preset 匹配策略预设名(`local`/`vl`/`seq*`/`bestof*`/`fallback`/`quality`/`bestof:<mode>`):等价于 `strategy_name=preset`
+- preset 匹配策略预设名(`local`/`vl`/`seq*`/`cascade*`/`bestof*`/`fallback`/`quality`/`bestof:<mode>`):等价于 `strategy_name=preset`
 - 其他值:HTTP 404 并列出所有可用引擎和预设名
 
 **同一张图,从 CLI 到 HTTP 到 Python 的完整链路示例**:
@@ -1607,24 +1685,37 @@ results = jykj_ocr.ocr("report.pdf", engine="rapidocr", max_pages=10, dpi=300)
 
 ### 9.7 使用场景速查
 
-| 你的场景 | 推荐预设 | 为什么 |
-|----------|----------|--------|
-| 离线 / 隐私敏感 / 批量低成本 | `local` | 只用本地 rapidocr,不调用任何外部服务 |
-| 版面复杂 / 手写 / 表格 | `vl` | 让远程 VL 大模型直接处理 |
-| 通用生产(引擎 A 大多数时候够用) | `seq`(默认) / `fallback` | 引擎 A 失败才降级,快且稳 |
-| 盖章 / 倾斜导致 rapidocr 窜行 | `quality` / `seq-any` | 窜行自动降级 + 按坐标重建阅读顺序 |
-| 低置信度自动降级 | `seq-low_conf` | 平均置信度低于阈值才切换引擎 |
-| 只关心窜行(不在乎置信度) | `seq-line_overlap` | 仅检测窜行触发降级 |
-| 追求综合最优(推荐首选) | `bestof` / `bestof-smart` | 所有引擎各跑一次,用置信度+流畅度+窜行惩罚综合打分 |
-| 追求速度 | `bestof-fastest` | 取耗时最低的引擎结果 |
-| 追求逐字准确 | `bestof-confidence` | 取平均置信度最高的结果 |
-| 追求完整性,不漏字 | `bestof-longest` | 取文本最长的结果 |
-| 追求"读起来像人话" | `bestof-fluency` | 用短语密度+CJK 标点−单字碎片惩罚选最自然的结果 |
+| 你的场景 | 推荐预设 | 建议模型 | 为什么 |
+|----------|----------|----------|--------|
+| 离线 / 隐私敏感 / 批量低成本 | `local` | `rapidocr`(本地 ONNX) | 不调用任何外部服务,零凭据,吞吐最高 |
+| 版面复杂 / 手写 / 表格 / 盖章 | `vl` | `PaddleOCR-VL-1.5`(默认)/ `Qwen3-VL-30B-A3B-Instruct` | 本地必然崩的图就别先试 rapidocr;30B 会自动分段、排版最漂亮 |
+| 通用生产(引擎 A 大多数时候够用) | `seq`(默认) / `fallback` | rapidocr → 快远程(`PaddleOCR-VL-1.5`) | 引擎 A 失败才降级,快且稳 |
+| 盖章 / 倾斜导致 rapidocr 窜行 | `quality` / `seq-any` | rapidocr → `Qwen3-VL-30B-A3B-Instruct` | 窜行自动降级 + 按坐标重建阅读顺序 |
+| 低置信度自动降级 | `seq-low_conf` | rapidocr → `Qwen3-VL-8B-Instruct` | 平均置信度低于 `min_confidence`(默认 0.7)才切换 |
+| 只关心窜行(不在乎置信度) | `seq-line_overlap` | rapidocr → 任意远程 VL | 仅检测窜行触发降级 |
+| 降级链路不想浪费时间 | `cascade-line_overlap` / `cascade` | 同上,但远程放快模型 | 同判定但 `max_retries=0`:本地窜行立刻上远程,不重扫同一张 |
+| 远程偶发返回空 / 被限流 | `seq*` 而不是 `cascade*` | 任意 | 这种失败重试一次就好,不该直接降级 |
+| 追求综合最优(推荐首选) | `bestof` / `bestof-smart` | rapidocr + `PaddleOCR-VL-1.5` + `Qwen3-VL-30B` | 所有引擎各跑一次,用置信度+流畅度+窜行惩罚综合打分 |
+| 追求速度 | `local`,而不是 `bestof-fastest` | `rapidocr` | `fastest` 比的是耗时,远程抖动时赢家会变 |
+| 追求逐字准确 | `bestof-confidence` | rapidocr + `PaddleOCR-VL-1.5` | 取平均置信度最高的结果(专用 OCR 模型置信度更可信) |
+| 追求完整性,不漏字 | `bestof-smart`,而非 `bestof-longest` | 任意 | 碎片化输出也可能很长;`smart` 会惩罚它 |
+| 追求"读起来像人话" | `bestof-fluency` | rapidocr + `Qwen3-VL-30B-A3B-Instruct` | 用短语密度+CJK 标点−单字碎片惩罚选最自然的结果 |
+| 单次调用不能超时 | 任何 `seq*` / `cascade*` / `vl` | 任意 | bestof 串行,3 引擎最坏 = 3 × timeout |
 
 > **对兰亭序实测**:rapidocr 输出 166 个单字(碎片化),远程多模态输出完整古文
-> 句子——`bestof-smart`/`bestof-fluency` 能正确选中硅基流动。如果只关心"读起来
+> 句子——`bestof-smart`/`bestof-fluency` 能正确选中远程 VL。如果只关心"读起来
 > 像人话",优先 `bestof-fluency`;如果对速度敏感,`seq`(默认)或 `seq-low_conf`
-> 往往更快。
+> 往往更快。模型类型与耗时对照见 §9.8。
+
+> **调 `min_confidence` 实测**:`seq-low_conf` 默认阈值 0.7 时停在 rapidocr
+> (488 字 / 9.7s,其平均置信度 0.91 > 0.7);`POST /config` 把阈值调到 0.95 后
+> 立即降级到远程 VL(324 字 / 19.8s);`DELETE /config` 还原后回到 rapidocr。
+> 阈值是运行时旋钮,不用改 yaml 也不用重启。
+
+> **提示词(prompt)只对远程引擎生效**。`rapidocr` 完全忽略它——同一张图带与不带
+> prompt 的 `rapidocr` 输出逐字节相同。所以给盖章 / 竖排 / 特殊版面写提示词,请把
+> 引擎链放到远程侧(至少含一条 `multimodal`),或用 `strategy_name="vl"` 直连远程。
+
 
 ### 9.8 远程模型选型参考(实测数据,2026-09-05)
 

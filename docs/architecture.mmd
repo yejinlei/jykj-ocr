@@ -16,7 +16,7 @@ flowchart TB
     end
 
     subgraph PRESET["策略预设层 engine/registry.py(一次性)"]
-        APPLY["apply_strategy_preset<br/>local / vl / fallback / quality"]
+        APPLY["apply_strategy_preset<br/>local / vl / seq* / cascade*<br/>bestof* / fallback / quality"]
         REMOTE["remote_engines()<br/>内置 multimodal<br/>JYKJ_OCR_REMOTE_ENGINES 可扩展"]
         ONESHOT["deepcopy 副本<br/>不改动 base config"]
         APPLY --> ONESHOT
@@ -24,12 +24,16 @@ flowchart TB
     end
 
     subgraph ORCH["策略层 strategy.py"]
-        STRAT["StrategyEngine<br/>按顺序尝试 + 重试"]
+        STRAT["StrategyEngine<br/>按顺序尝试 + 重试<br/>seq* 重试 / cascade* max_retries=0"]
         RETRY{"retry_check<br/>no_text / low_confidence<br/>line_overlap / any / none"}
+        BESTOF["BestofEngine<br/>所有引擎各跑一次 + 评分"]
+        SCORE{"评分函数<br/>smart / fastest / confidence<br/>longest / fluency"}
         TIMED["TimedOCR<br/>计时装饰"]
         STRAT --> RETRY
         RETRY -->|未通过| STRAT
         RETRY -->|通过| TIMED
+        BESTOF -->|全部跑完| SCORE
+        SCORE -->|取最高分| TIMED
     end
 
     subgraph REG["引擎注册表 engine/ (惰性 import)"]
@@ -63,6 +67,11 @@ flowchart TB
     PREC --> ORCH
 
     ORCH --> REG
+    REGISTRY -.->|bestof_mode?| BESTOF
+
+    MODELS_MOD --> OUT["OCRResult<br/>text + regions + engine + model + elapsed_ms"]
+    TIMED --> OUT
+    SCORE --> OUT
     RAPID_IMP --> RAPID
     MULTI_IMP --> MULTI
 
@@ -71,7 +80,6 @@ flowchart TB
     PAGE -->|attach_pil| RAPID
     PAGE -->|attach_pil| MULTI
 
-    MODELS_MOD --> OUT["OCRResult<br/>text + regions + engine + model + elapsed_ms"]
     OUT --> CLI
     OUT --> SERV
 
@@ -79,11 +87,13 @@ flowchart TB
     classDef config fill:#e8f5e9,stroke:#2e7d32
     classDef preset fill:#fffde7,stroke:#f9a825
     classDef orch fill:#e3f2fd,stroke:#1565c0
+    classDef best fill:#f3e5f5,stroke:#6a1b9a
     classDef eng fill:#f3e5f5,stroke:#6a1b9a
     classDef input fill:#fce4ec,stroke:#ad1457
     class CLI,PYAPI,HTTP client
     class ENV,YAML,PREC config
     class APPLY,REMOTE,ONESHOT preset
     class STRAT,RETRY,TIMED orch
+    class BESTOF,SCORE best
     class RAPID,MULTI,MODELS_MOD eng
     class LOAD,PAGE input

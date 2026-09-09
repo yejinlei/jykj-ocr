@@ -145,19 +145,31 @@ flowchart TB
         YAML --&gt; PREC
     end
 
+    subgraph PRESET["策略预设层 engine/registry.py(一次性)"]
+        APPLY["apply_strategy_preset&lt;br/&gt;local / vl / seq* / cascade*&lt;br/&gt;bestof* / fallback / quality"]
+        REMOTE["remote_engines()&lt;br/&gt;内置 multimodal&lt;br/&gt;JYKJ_OCR_REMOTE_ENGINES 可扩展"]
+        ONESHOT["deepcopy 副本&lt;br/&gt;不改动 base config"]
+        APPLY --&gt; ONESHOT
+        REMOTE --&gt; APPLY
+    end
+
     subgraph ORCH["策略层 strategy.py"]
-        STRAT["StrategyEngine&lt;br/&gt;按顺序尝试 + 重试"]
-        RETRY{"retry_check&lt;br/&gt;no_text / low_confidence / none"}
+        STRAT["StrategyEngine&lt;br/&gt;按顺序尝试 + 重试&lt;br/&gt;seq* 重试 / cascade* max_retries=0"]
+        RETRY{"retry_check&lt;br/&gt;no_text / low_confidence&lt;br/&gt;line_overlap / any / none"}
+        BESTOF["BestofEngine&lt;br/&gt;所有引擎各跑一次 + 评分"]
+        SCORE{"评分函数&lt;br/&gt;smart / fastest / confidence&lt;br/&gt;longest / fluency"}
         TIMED["TimedOCR&lt;br/&gt;计时装饰"]
         STRAT --&gt; RETRY
         RETRY --&gt;|未通过| STRAT
         RETRY --&gt;|通过| TIMED
+        BESTOF --&gt;|全部跑完| SCORE
+        SCORE --&gt;|取最高分| TIMED
     end
 
     subgraph REG["引擎注册表 engine/ (惰性 import)"]
-        REGISTRY["registry.py&lt;br/&gt;build_engine / build_strategy"]
+        REGISTRY["registry.py&lt;br/&gt;build_engine / build_pipeline&lt;br/&gt;resolve_retry_check"]
         REGISTRY --&gt;|lazy| RAPID_IMP["rapidocr_engine"]
-        REGISTRY --&gt;|lazy| MULTI_IMP["multimodal_engine&lt;br/&gt;(唯一的远程引擎类型)"]
+        REGISTRY --&gt;|lazy| MULTI_IMP["multimodal_engine&lt;br/&gt;(唯一的远程引擎类型,可配置多个实例)"]
     end
 
     subgraph ENGINES["引擎层 engines/"]
@@ -176,11 +188,17 @@ flowchart TB
     CLI --&gt; PYAPI
     CLI --&gt; HTTP
     HTTP --&gt; SERV["server.py&lt;br/&gt;RuntimeConfig 线程安全&lt;br/&gt;POST /config 运行时覆盖"]
+    SERV --&gt;|strategy_name| PRESET
+    PYAPI --&gt;|strategy_name| PRESET
+    CLI --&gt;|strategy_name| PRESET
+    PRESET --&gt; ORCH
     SERV --&gt; ORCH
     PYAPI --&gt; ORCH
     PREC --&gt; ORCH
 
     ORCH --&gt; REG
+    REGISTRY -.-&gt;|bestof_mode?| BESTOF
+
     RAPID_IMP --&gt; RAPID
     MULTI_IMP --&gt; MULTI
 
@@ -190,17 +208,23 @@ flowchart TB
     PAGE --&gt;|attach_pil| MULTI
 
     MODELS_MOD --&gt; OUT["OCRResult&lt;br/&gt;text+regions+engine+model+elapsed_ms"]
+    TIMED --&gt; OUT
+    SCORE --&gt; OUT
     OUT --&gt; CLI
     OUT --&gt; SERV
 
     classDef client fill:#fff3e0,stroke:#e65100
     classDef config fill:#e8f5e9,stroke:#2e7d32
+    classDef preset fill:#fffde7,stroke:#f9a825
     classDef orch fill:#e3f2fd,stroke:#1565c0
+    classDef best fill:#f3e5f5,stroke:#6a1b9a
     classDef eng fill:#f3e5f5,stroke:#6a1b9a
     classDef input fill:#fce4ec,stroke:#ad1457
     class CLI,PYAPI,HTTP client
     class ENV,YAML,PREC config
+    class APPLY,REMOTE,ONESHOT preset
     class STRAT,RETRY,TIMED orch
+    class BESTOF,SCORE best
     class RAPID,MULTI,MODELS_MOD eng
     class LOAD,PAGE input
     </pre>
@@ -234,17 +258,27 @@ flowchart TB
   <h2 id="flow">请求处理流程</h2>
   <div class="card">
     <pre><code>CLI / API / HTTP
-   │  source(路径/URL)
+   │  source(路径/URL)  +  strategy_name(可选)
    ▼
 engine/inputs.py  load()  ──▶ PageImage(PIL 图像 + 尺寸)
    │
    ▼  attach_pil(page)
-StrategyEngine(按 config.engines 顺序)
-   │  ┌─ 尝试 engine[i] ─▶ recognise(page) ─▶ OCRResult
-   │  │   retry_check(result)?
-   │  │     ├─ 通过  ─▶ 返回(TimedOCR 计时)
-   │  │     └─ 未通过 ─▶ 重试(≤ max_retries)─▶ 切换下一引擎
-   │  └─ 链耗尽 ─▶ 返回 ok 且文本最长的结果;皆无文本 ─▶ StrategyError (HTTP 422)
+apply_strategy_preset(name)  ──▶ deepcopy config(一次性,不改 base)
+   │
+   ▼  build_pipeline(strategy)
+   ├── strategy["bestof_mode"] 存在?
+   │       ▼ 是
+   │   BestofEngine(所有引擎各跑一次,串行)
+   │       └─ 评分 smart / fastest / confidence / longest / fluency
+   │              └─ 取最高分 ─▶ OCRResult
+   │
+   └── 否 ─▶ StrategyEngine(按 config.engines 顺序)
+         │  ┌─ 尝试 engine[i] ─▶ recognise(page) ─▶ OCRResult
+         │  │   retry_check(result)?
+         │  │     ├─ 通过  ─▶ 返回(TimedOCR 计时)
+         │  │     └─ 未通过 ─▶ 重试(≤ max_retries)─▶ 切换下一引擎
+         │  │                    └─ cascade*: max_retries=0,跳过重试
+         │  └─ 链耗尽 ─▶ 返回 ok 且文本最长的结果;皆无文本 ─▶ StrategyError (HTTP 422)
    ▼
 OCRResult(text, regions, engine, model, elapsed_ms)
    │

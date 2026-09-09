@@ -113,32 +113,56 @@
 
     <h3 style="font-size:1.05rem;color:var(--text);margin:1.2rem 0 0.5rem;">顺序预设 <code>seq*</code>(走 <code>StrategyEngine</code>,按序尝试,首个命中即返回)</h3>
     <table>
-      <thead><tr><th>预设</th><th>引擎范围</th><th>重试判定</th><th>阅读顺序重排</th><th>适用场景</th></tr></thead>
+      <thead><tr><th>预设</th><th>引擎范围</th><th>重试判定</th><th>阅读顺序重排</th><th>建议模型 / 场景</th></tr></thead>
       <tbody>
-        <tr><td><code>local</code></td><td>仅本地(rapidocr 家族)</td><td><code>no_text</code></td><td>—</td><td>离线、隐私敏感、批量低成本</td></tr>
-        <tr><td><code>vl</code></td><td>仅 1 条远程 VL 大模型(config 里第一条已启用的)</td><td><code>no_text</code></td><td>—</td><td>版面复杂、手写、表格</td></tr>
-        <tr><td><code>seq</code></td><td>全部启用引擎按序回退</td><td><code>no_text</code></td><td>—</td><td>通用生产链路</td></tr>
-        <tr><td><code>seq-any</code></td><td>同 seq + 窜行降级</td><td><code>any</code></td><td>✅</td><td>盖章/倾斜导致 rapidocr 窜行</td></tr>
-        <tr><td><code>seq-low_conf</code></td><td>全部启用引擎</td><td><code>low_confidence</code></td><td>—</td><td>低置信度自动降级</td></tr>
-        <tr><td><code>seq-line_overlap</code></td><td>全部启用引擎</td><td><code>line_overlap</code></td><td>—</td><td>窜行时自动降级</td></tr>
-        <tr><td><code>fallback</code></td><td>同 seq</td><td><code>no_text</code></td><td>—</td><td>legacy 别名(回退链)</td></tr>
-        <tr><td><code>quality</code></td><td>同 seq-any</td><td><code>any</code></td><td>✅</td><td>legacy 别名(窜行降级+重排)</td></tr>
+        <tr><td><code>local</code></td><td>仅本地(rapidocr 家族)</td><td><code>no_text</code></td><td>—</td><td>只能有 <code>rapidocr</code>。**离线 / 隐私 / 批量化**</td></tr>
+        <tr><td><code>vl</code></td><td>仅 1 条远程 VL(config 里第一条已启用的)</td><td><code>no_text</code></td><td>—</td><td><code>PaddleOCR-VL-1.5</code> 或 <code>Qwen3-VL-30B</code>。**本地必然烂的图**:手写、盖章、拍照倾斜、表格</td></tr>
+        <tr><td><code>seq</code></td><td>全部启用引擎</td><td><code>no_text</code></td><td>—</td><td>rapidocr → 快 VL。**通用生产默认**</td></tr>
+        <tr><td><code>seq-any</code></td><td>同 seq + 窜行降级</td><td><code>any</code></td><td>✅</td><td>同上。**盖章 / 倾斜 / 双栏**导致 rapidocr 窜行</td></tr>
+        <tr><td><code>seq-low_conf</code></td><td>全部启用引擎</td><td><code>low_confidence</code></td><td>—</td><td>阈值默认 <strong>0.7</strong>(可 <code>POST /config</code> 运行时改)。**模糊 / 低对比度 / 小字**</td></tr>
+        <tr><td><code>seq-line_overlap</code></td><td>全部启用引擎</td><td><code>line_overlap</code></td><td>—</td><td>只看窜行,不看置信度。**只关心版面顺序**</td></tr>
+        <tr><td><code>fallback</code></td><td>同 seq</td><td><code>no_text</code></td><td>—</td><td>legacy 别名(等同 <code>seq</code>)</td></tr>
+        <tr><td><code>quality</code></td><td>同 seq-any</td><td><code>any</code></td><td>✅</td><td>legacy 别名(等同 <code>seq-any</code>:窜行降级 + 重排)</td></tr>
       </tbody>
     </table>
+    <p style="color:var(--muted);font-size:0.88rem;margin-top:0.4rem;">
+      <strong>建议的引擎顺序</strong>:rapidocr 放第一位(命中成本 0)→ 快远程(<code>PaddleOCR-VL-1.5</code>,~3–5s)→
+      慢远程(<code>Qwen3-VL-30B</code>,~12s;或 8B 省 token 兜底)。<strong>不要</strong>把代码/对话 Agent
+      模型(Kimi-K2.7-Code / GLM-4.5V 一类)当常规条目 —— 实测 140s+ 且带幻觉前缀。
+    </p>
+
+    <h3 style="font-size:1.05rem;color:var(--text);margin:1.5rem 0 0.5rem;">级联预设 <code>cascade*</code>(与 <code>seq*</code> 同一个 <code>StrategyEngine</code>,唯一区别 <code>max_retries=0</code>)</h3>
+    <table>
+      <thead><tr><th>预设</th><th>retry_mode</th><th>建议模型 / 场景</th></tr></thead>
+      <tbody>
+        <tr><td><code>cascade</code></td><td><code>no_text</code></td><td>同 <code>seq</code>,但被 reject 立刻换引擎,不重扫同一张</td></tr>
+        <tr><td><code>cascade-low_conf</code></td><td><code>low_confidence</code></td><td>同 <code>seq-low_conf</code></td></tr>
+        <tr><td><code>cascade-line_overlap</code></td><td><code>line_overlap</code></td><td>**快速兜底链**:本地窜行就立刻上远程。实测比 <code>seq-line_overlap</code> 快 ~9s(11.0s vs 20.4s,差出的就是一次 rapidocr 重跑)</td></tr>
+      </tbody>
+    </table>
+    <p style="color:var(--muted);font-size:0.88rem;margin-top:0.4rem;">
+      <strong>选 <code>seq*</code> 还是 <code>cascade*</code></strong>:结果可能受网络抖动 / 限流影响(远程偶发空)→ <code>seq*</code>;
+      结果取决于图片本身(盖章窜行再扫一遍还是窜行)→ <code>cascade*</code>。
+    </p>
 
     <h3 style="font-size:1.05rem;color:var(--text);margin:1.5rem 0 0.5rem;">最佳预设 <code>bestof*</code>(走 <code>BestofEngine</code>,所有引擎各跑一次,按评分选最佳)</h3>
     <table>
-      <thead><tr><th>预设</th><th>评分函数</th><th>适用场景</th></tr></thead>
+      <thead><tr><th>预设</th><th>评分函数</th><th>建议模型 / 场景</th></tr></thead>
       <tbody>
-        <tr><td><code>bestof</code> / <code>bestof-smart</code></td><td>置信度×100 − 窜行 + 文本长度 + **语义流畅度**</td><td>综合最优,**推荐**</td></tr>
-        <tr><td><code>bestof-fastest</code></td><td>耗时(elapsed_ms)最低</td><td>追求速度</td></tr>
-        <tr><td><code>bestof-confidence</code></td><td>平均置信度最高</td><td>追求质量</td></tr>
-        <tr><td><code>bestof-longest</code></td><td>文本最长</td><td>追求完整性</td></tr>
-        <tr><td><code>bestof-fluency</code></td><td>短语密度 + CJK 标点 − 单字碎片惩罚</td><td>追求"读起来像人话",对比本地碎片化 vs VL 连贯结果</td></tr>
-        <tr><td><code>bestof:&lt;mode&gt;</code></td><td>同以上任意 mode</td><td>冒号语法别名</td></tr>
+        <tr><td><code>bestof</code> / <code>bestof-smart</code></td><td>置信度×100 − 窜行 + 文本长度 + **语义流畅度**</td><td>rapidocr + 快 VL。**通用质量最优,推荐首选**,自动规避碎片化输出</td></tr>
+        <tr><td><code>bestof-fastest</code></td><td>耗时(elapsed_ms)最低</td><td>⚠️ 比的是本次耗时,远程抖动时赢家会变。要稳定走本地请用 <code>local</code></td></tr>
+        <tr><td><code>bestof-confidence</code></td><td>平均置信度最高</td><td>建议 rapidocr 做对照。**逐字准确**,需原文核对</td></tr>
+        <tr><td><code>bestof-longest</code></td><td>文本最长</td><td>⚠️ 陷阱:碎片化输出也可能很长。要"不漏字"请配 <code>smart</code></td></tr>
+        <tr><td><code>bestof-fluency</code></td><td>短语密度 + CJK 标点 − 单字碎片惩罚</td><td>建议 <code>Qwen3-VL-30B</code>(自动分段)。**追求"读起来像人话"**</td></tr>
+        <tr><td><code>bestof:&lt;mode&gt;</code></td><td>同以上任意 mode</td><td>冒号语法别名(仅 HTTP / Python,CLI 不支持)</td></tr>
       </tbody>
     </table>
-    <p style="color:var(--muted);font-size:0.88rem;margin-top:0.4rem;"><code>bestof-fluency</code>:短语越长越连贯(+15),有标点更像自然语言(+5),单字/短词碎片扣减(上限 −25)。兰亭序实测 rapidocr fluency≈−23,远程多模态≈+15。</p>
+    <p style="background:var(--card);border-left:3px solid var(--orange);padding:0.7rem 0.9rem;margin:1rem 0;font-size:0.9rem;">
+      <strong>成本警告</strong>:<code>BestofEngine</code> 是<strong>串行</strong>的,3 个引擎最坏耗时 = 3 × <code>timeout</code>。
+      远程 <code>timeout: 180</code> 时一次 <code>bestof*</code> 调用最坏等 ~9 分钟。超时那条进
+      <code>decision.errors</code> 而非整体 502,其余候选仍正常打分——但你少了一个候选。
+      <code>prompt</code> 只对远程引擎生效,<code>rapidocr</code> 完全忽略(实测逐字节相同)。
+    </p>
 
     <p style="color:var(--muted);font-size:0.9rem;margin-top:0.6rem;">优先级:单次请求 <code>strategy_name</code> &gt; <code>POST /config</code> 运行时覆盖 &gt; <code>config.yaml</code>。新引擎注册即被预设识别,远程侧用 <code>JYKJ_OCR_REMOTE_ENGINES</code> 标记。</p>
 
