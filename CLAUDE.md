@@ -61,7 +61,7 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 │   ├── config.vl.yaml       # 示例 2:只远程 VL(硅基流动 + 模力方舟)
 │   ├── config.seq.yaml      # 示例 3:local + 1 远程兜底
 │   └── config.bestof.yaml   # 示例 4:local + 2 远程,bestof_mode: smart
-├── tests/                   # pytest,338 个用例(338 passed)
+├── tests/                   # pytest,342 个用例(342 passed)
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / pyproject.toml
 ├── .env.example             # 占位符模板(真实 key 走 export / Docker -e,本仓库不保留 .env)
@@ -74,7 +74,7 @@ jykj_ocr 是一个多引擎 OCR Python 项目:同时支持本地 RapidOCR(离线
 # 安装(仅外部依赖;rapidocr_onnxruntime 按需要单独装)
 .venv/Scripts/python -m pip install -r requirements.txt
 
-# 运行测试(目前 338 passed)
+# 运行测试(目前 342 passed)
 .venv/Scripts/python -m pytest tests -q
 
 # CLI 识别(source 是位置参数,没有 ocr 子命令,也没有 -i)
@@ -231,6 +231,6 @@ docker compose up -d
 3. 不要往 repo 提交真实 API key;`.env` 已 gitignore,新环境用 `.env.example` 起手。
 4. 加新引擎:实现 `BaseEngine` 子类 + `_recognise_impl` + `_wrap`,用 `@register("name")` 装饰工厂函数;
    若要保留惰性 import,在 `engine/__init__.py` 里 `register_lazy` 即可。
-5. 改 API 契约前跑一遍 `pytest tests -q`;当前 338 passed 是基线。
+5. 改 API 契约前跑一遍 `pytest tests -q`;当前 342 passed 是基线。
 6. `engines_from_config` 不带显式 names 时只用 **enabled** 引擎(尊重 `enabled: false`);
    加新引擎后跑一遍预设测试确认 `local`/`vl` 归类正确(远程名单外的都进 local)。

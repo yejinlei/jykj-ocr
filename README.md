@@ -269,7 +269,7 @@ docker run --rm -e OPENAI_API_KEY=sk-... -v "$PWD:/data" jykj_ocr \
 ## 测试
 
 ```bash
-.venv/Scripts/python -m pytest tests -q       # 338 个用例,全部离线,无真实 API 调用
+.venv/Scripts/python -m pytest tests -q       # 342 个用例,全部离线,无真实 API 调用
 ```
 
 覆盖 models、config(别名归一化 / YAML / 环境变量优先级 / 多实例去重)、strategy
@@ -312,7 +312,7 @@ src/jykj_ocr/
 ├── cli.py                 # argparse CLI
 └── server.py              # FastAPI 路由
 config/                    # config.yaml + 4 份示例(见「配置」章节)
-tests/                     # pytest,338 passed
+tests/                     # pytest,342 passed
 scripts/                   # 诊断与真实模型回归脚本
 Dockerfile / docker-compose.yml / requirements.txt / pyproject.toml
 ```

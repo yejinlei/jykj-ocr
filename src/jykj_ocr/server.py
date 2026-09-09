@@ -98,28 +98,36 @@ def _clean_format(value: Optional[str]) -> str:
     return (cleaned or "json").lower()
 
 
-def _resolve_max_retries(value: Optional[str]) -> Optional[int]:
-    """Parse a ``max_retries`` form value.
+def _parse_max_retries_form(value: Optional[str]) -> Optional[int]:
+    """Normalise a multipart ``max_retries`` before it hits ``TextRequest``.
 
-    ``max_retries`` is the only strategy knob typed ``int`` in the body, so the
-    JSON body path already rejects a Swagger placeholder at request parsing —
-    but multipart takes it as a string and a blank ``max_retries=`` parses as
-    ``None`` and would quietly mean "keep the config default" instead of
-    failing loudly. Coerce here so both input paths behave identically;
-    callers get ``None`` back for "not sent" and a 400 for garbage.
+    ``TextRequest.max_retries`` is typed ``int``, but form fields arrive as
+    strings — pydantic rejects ``"abc"`` while building the body, which used to
+    leak out as a bare 500. Blank and Swagger's Generate cURL placeholder
+    (``integer``) both mean "not sent"; anything else that is not a
+    non-negative integer is a typo and gets a 400 that names the field.
     """
     if value is None:
         return None
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value if value >= 0 else None
     text = str(value).strip()
-    if not text:
+    if _clean(text) is None:
         return None
     try:
         parsed = int(text)
     except (TypeError, ValueError):
-        return None
-    return parsed if parsed >= 0 else None
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "max_retries must be an integer >= 0; "
+                "omit the field to keep the config default"
+            ),
+        ) from None
+    if parsed < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="max_retries must be >= 0 (0 means cascade)",
+        )
+    return parsed
 
 
 # OpenAPI 响应组件:统一的错误响应结构
@@ -790,26 +798,13 @@ def _apply_inline_overrides(config: Config, body: TextRequest) -> Config:
     # Swagger's generated curl fills every optional field with the schema type
     # ("string", "integer", ...). Nothing downstream can tell those from real
     # values, so normalise them away here — one place covers all four OCR
-    # endpoints. ``max_retries`` is int-typed, so a placeholder there already
-    # fails at request parsing (422) and never reaches this function.
+    # endpoints. ``max_retries`` is int-typed too: FastAPI rejects it at
+    # request parsing on the JSON path, and ``_parse_max_retries_form`` coerces
+    # the multipart string before the body is built. ``ge=0`` on the field
+    # handles negatives, so nothing here has to.
     for field in ("engine", "model", "base_url", "api_key", "prompt",
                   "strategy_name", "retry_mode", "score_mode"):
         setattr(body, field, _clean(getattr(body, field)))
-    # ``max_retries`` is the only knob the multipart endpoints take as a string
-    # (the JSON body types it int), so coerce it here before anything reads it.
-    # A blank or placeholder value means "not sent"; anything else that does
-    # not parse as a non-negative int is a genuine typo and gets a 400 rather
-    # than quietly becoming "keep the config default".
-    retries = _resolve_max_retries(body.max_retries)
-    if retries is None and _clean(body.max_retries) is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "max_retries must be an integer >= 0; "
-                "omit the field to keep the config default"
-            ),
-        )
-    body.max_retries = retries
     body.format = _clean_format(body.format)
 
     if body.engine:
@@ -1254,7 +1249,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             strategy_name=strategy_name,
             retry_mode=retry_mode,
             score_mode=score_mode,
-            max_retries=max_retries,
+            max_retries=_parse_max_retries_form(max_retries),
         )
         effective = _apply_inline_overrides(state.snapshot(), body)
 

@@ -804,6 +804,65 @@ class TestOpenAPIPlaceholderFilter:
         assert r.status_code == 200, r.text
         assert "decision" in r.json()
 
+    def test_placeholder_max_retries_is_ignored(self, monkeypatch):
+        """``max_retries=integer`` is the same trap on the int-typed knob.
+
+        Every other knob is a string, so ``_clean`` already swallowed its
+        placeholder. ``max_retries`` is int-typed: the literal used to reach
+        pydantic as a string and 500, which defeated the whole "Generate cURL
+        must not break" guarantee on the one field it names by number.
+
+        Must target ``/ocr`` — the ``/ocr/{preset}`` routes never declare the
+        knob at all, so they cannot exercise the parser.
+        """
+        c = self._client(monkeypatch)
+
+        for literal in self.PLACEHOLDERS:
+            r = _post_png(c, "/ocr", max_retries=literal,
+                          strategy_name="seq", format="json")
+            assert r.status_code == 200, f"{literal}: {r.status_code} {r.text}"
+            assert isinstance(r.json()["decision"]["retries"], int)
+
+    def test_invalid_max_retries_is_a_400_not_a_500(self, monkeypatch):
+        """``max_retries=abc`` used to escape as a bare 500.
+
+        The multipart form declared the field ``str`` while ``TextRequest``
+        types it ``int``, so pydantic rejected the body before any business
+        check could answer — a typo became an internal server error.
+        """
+        c = self._client(monkeypatch)
+
+        r = _post_png(c, "/ocr", max_retries="abc",
+                      strategy_name="seq", format="json")
+        assert r.status_code == 400, r.text
+        assert "max_retries" in r.json()["detail"]
+
+    def test_parse_max_retries_form_shape(self):
+        """Blanks, placeholders and case variants all mean "not sent"."""
+        from jykj_ocr.server import _parse_max_retries_form
+
+        for literal in self.PLACEHOLDERS:
+            assert _parse_max_retries_form(literal) is None, literal
+        for case in ("Integer", "INTEGER", "InTeGeR"):
+            assert _parse_max_retries_form(case) is None, case
+        for blank in (None, "", "   "):
+            assert _parse_max_retries_form(blank) is None, repr(blank)
+        # Real values survive, including the two semantically distinct ones.
+        assert _parse_max_retries_form("7") == 7
+        assert _parse_max_retries_form("0") == 0
+        assert _parse_max_retries_form("  3 ") == 3
+
+    def test_parse_max_retries_form_rejects_typo_and_negative(self):
+        """A typo or negative value is a client error that names the field."""
+        from fastapi import HTTPException
+        from jykj_ocr.server import _parse_max_retries_form
+
+        for bad in ("abc", "-1", "-100", "1.5", "3x"):
+            with pytest.raises(HTTPException) as excinfo:
+                _parse_max_retries_form(bad)
+            assert excinfo.value.status_code == 400, bad
+            assert "max_retries" in excinfo.value.detail, bad
+
     def test_real_retry_mode_still_400s_when_invalid(self, monkeypatch):
         """The filter must not turn a genuine typo into a silent no-op.
 
