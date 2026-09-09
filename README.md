@@ -183,7 +183,7 @@ python -m jykj_ocr serve          # 或 JYKJ_OCR_PORT=9000 ...
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/health` | 健康检查 |
+| `GET` | `/health` | 健康检查(`engines` 是去重到**类型**的列表,与配置条目数无关;条目请看 `/engines` 的 `configured`) |
 | `GET` | `/engines` | 可用引擎 + 当前引擎顺序 |
 | `GET` | `/presets` | 全部命名预设的元数据(含每个预设的引擎个数下限 `min_engines`) |
 | `GET` / `POST` / `DELETE` | `/config` | 查看 / 运行时覆盖 / 清除覆盖(不返回 key 明文) |

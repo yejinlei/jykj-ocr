@@ -1053,7 +1053,8 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     # -- 状态与临时配置接口 ---------------------------------------------------
     @app.get("/health", tags=["配置与状态"],
          summary="健康检查",
-         description="返回服务状态与已注册引擎名列表(不含当前配置)。")
+         description=(
+             "返回服务状态与已注册的**引擎类型**名列表。`engines` 去重到类型层,与配置条目数无关:多实例部署下同一个类型只出现一次。要看实际配置的条目数(每个 multimodal 实例各占一行,带 model/base_url 指纹)请查 `GET /engines` 的 `configured`。"))
     async def health() -> Dict[str, Any]:
         return {"status": "ok", "engines": list(describe_engines().keys())}
 

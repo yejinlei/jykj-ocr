@@ -636,8 +636,8 @@ JYKJ_OCR_PORT=8000 python -m uvicorn jykj_ocr.server:app --host 0.0.0.0
 | `GET` | `/config` | — | ❌ 单独结构 |
 | `POST` | `/config` | JSON body(运行时覆盖) | ❌ 单独结构 |
 | `DELETE` | `/config` | — | ❌ 单独结构 |
-| `GET` | `/health` | — | ❌ `{status, engines}` |
-| `GET` | `/engines` | — | ❌ `{engines, configured}` |
+| `GET` | `/health` | — | ❌ `{status, engines}`(`engines` 是去重到**引擎类型**的列表,与配置条目数无关;要看实例级条目请查下一行的 `configured`) |
+| `GET` | `/engines` | — | ❌ `{engines, configured}`(`engines` 类型表 / `configured` 实例级条目) |
 | `GET` | `/presets` | — | ❌ `{presets}`(见 §9.1.1;每项含 `min_engines` 引擎个数下限) |
 
 **四个 OCR 端点返回结构完全一致**(`{pages, text, engine, page_count, score, score_mode, decision}`)。只有 `format=text`/`markdown` 时退化为纯文本。`{preset}` 路径参数见 §9.1(命名策略预设)。
