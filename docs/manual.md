@@ -1755,6 +1755,51 @@ results = jykj_ocr.ocr("report.pdf", engine="rapidocr", max_pages=10, dpi=300)
 会同时跑它们并选"读起来最像人话"的输出——正好对应上表里"文本整理最佳"
 那一档。`/ocr/bestof-fastest` 则会选最快,通常落在 PaddleOCR-VL-1.5。
 
+### 9.9 全预设实测结果(2026-09-09)
+
+部署:`http://192.168.0.81:8000`,3 引擎 = `rapidocr` + `PaddlePaddle/PaddleOCR-VL-1.5` +
+`moonshotai/Kimi-K2.7-Code`。图片:`tests/兰亭序.jpeg`(750×1390 繁体古文)。
+驱动脚本:`scripts/real_model_e2e.py`,35 项 **33 通过 / 2 SKIP / 0 失败**,总耗时
+~1263s。
+
+| 预设 | 期望行为 | 实测结果 | 耗时 | 判定 |
+|------|----------|----------|-----:|------|
+| `local` | 只用本地引擎 | `rapidocr`,488 字 | 8.9s | ✅ 未触发任何远程调用 |
+| `vl` | 仅第 1 条已启用远程 | `PaddleOCR-VL-1.5`,324 字 | 2.5s | ✅ 选 Paddle 而非 Kimi——验证「保留 1 条远程」 |
+| `seq` | 首个命中即返回(`no_text`) | `rapidocr`,488 字 | 9.7s | ✅ rapidocr 非空即通过 |
+| `seq-any` | 窜行降级 + 按坐标重排 | `PaddleOCR-VL-1.5`,324 字 | 20.3s | ✅ rapidocr 被判窜行,降级生效 |
+| `seq-low_conf` | 平均置信度 < `min_confidence`(0.7)才降级 | `rapidocr`,488 字 | 9.7s | ✅ rapidocr 置信度 0.91 > 0.7,不降级 |
+| `seq-line_overlap` | 窜行降级 | `PaddleOCR-VL-1.5`,324 字 | 20.4s | ✅ |
+| `cascade` | 同 seq,`max_retries=0` | `rapidocr`,488 字 | 10.1s | ✅ |
+| `cascade-low_conf` | 同上 | `rapidocr`,488 字 | 9.0s | ✅ |
+| `cascade-line_overlap` | 窜行**立刻**降级,不重试 | `PaddleOCR-VL-1.5`,324 字 | **11.0s** | ✅ 比 `seq-line_overlap`(20.4s)快 9.4s——差值正好是一次 rapidocr 重跑 |
+| `fallback` | legacy 别名 == `seq` | `rapidocr`,488 字 | 10.2s | ✅ |
+| `quality` | legacy 别名 == `seq-any` | `PaddleOCR-VL-1.5`,324 字 | 21.1s | ✅ |
+| `bestof` / `bestof-smart` | 置信度 − 窜行 + 长度 + 流畅度 | `PaddleOCR-VL-1.5`,324 字 | 158.5s | ✅ 惩罚 rapidocr 的 166 个单字碎片 |
+| `bestof-fastest` | `−elapsed_ms` | **`PaddleOCR-VL-1.5`**,324 字 | 148.4s | ✅ **赢家漂移**:Paddle 本次 ~2.5s 比 rapidocr ~9.7s 快。想稳定走本地请用 `local` |
+| `bestof-confidence` | 平均置信度最高 | `PaddleOCR-VL-1.5`,324 字 | 195.8s | ✅ |
+| `bestof-longest` | `len(text)` | **`rapidocr`**,488 字 | 113.4s | ✅ 488 > 324,长度取胜 |
+| `bestof-fluency` | 短语密度 + CJK 标点 − 单字碎片惩罚 | `PaddleOCR-VL-1.5`,324 字 | 161.9s | ✅ |
+| `bestof:smart` | 冒号语法别名 | `PaddleOCR-VL-1.5`,324 字 | 110.1s | ✅ |
+
+**本轮观察**:
+
+- **bestof 三个候选全部跑完,没有超时**。耗时 110~196s 主要由 Kimi 那 ~140s
+  贡献,不是 Paddle。§9.3 的「超时那条进 `decision.errors` 而不是整体 502」机制
+  本轮未触发,但曾抓到过——放在 bestof 链里的慢模型代价是每次调用都多等它。
+- **`bestof-fastest` 的赢家变了**:本轮选的是远程 Paddle,不是 rapidocr。
+  rapidocr 稳定在 ~9.7s,而远程 VL 抖动很大(实测见过 1.9s / 3.3s / 5.3s / 2.5s),
+  某次远程恰好比本地快,赢家就翻过去了。§9.3 的警告是实测证据。
+- **`cascade-line_overlap` 11.0s vs `seq-line_overlap` 20.4s**,差出的 9.4s
+  就是那一次 rapidocr 重跑——本地对同一张图重扫不会变好。
+- **`vl` 选的是 Paddle(第一条已启用的远程),不是 Kimi**。若两条远程都进
+  `StrategyEngine` 的重试链,返回的模型会随重试结果漂移,不可预测——这正是 `vl`
+  预设自己保证「只保留 1 条远程」的原因。
+- **2 个 SKIP** 是 `image_url` 用例:该部署外网出口受限,服务端尝试下载公开图片
+  URL 会拿到 SSL 握手超时 / 读超时,不能作为稳定输入源。`image_url` 由服务端解析,
+  REST 客户端无法假定服务器文件系统上有测试图片,所以标 SKIP 而非 FAIL。远端跑
+  请用 `JYKJ_OCR_REMOTE_IMAGE_URL` 指定服务端可达的 URL。
+
 ---
 
 ## 10. 常见问题
